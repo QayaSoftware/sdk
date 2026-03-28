@@ -11,6 +11,7 @@ Prefabs for slime are essentially an id, mask and a set of components. There is 
 Take these numbers with a grain of salt just like any performance tests. But for those of you who like numbers i guess here we go.
 Tested on an i7 12700f.
 
+```
 benchmark                         n      total_ms    ns/entity
 ----------------------------------------------------------------
 spawn P+V                      1000000     67.586 ms             67 ns/op
@@ -21,3 +22,4 @@ spawnPrefab (same prefab)      1000000     65.897 ms             65 ns/op
 addComponent V (migrate)       1000000     80.321 ms             80 ns/op
 removeComponent V (migrate)    1000000     75.255 ms             75 ns/op
 despawn                        1000000      8.620 ms              8 ns/op
+```
