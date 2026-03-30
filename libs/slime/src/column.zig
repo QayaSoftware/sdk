@@ -79,9 +79,9 @@ pub const Column = struct {
     pub fn copyRowFrom(self: *Column, dst_row: usize, src: *const Column, src_row: usize) void {
         std.debug.assert(dst_row < self.len);
         std.debug.assert(src_row < src.len);
-        std.debug.assert(self.stride == src.stride);
-        const a = dst_row * self.stride;
-        const b = src_row * self.stride;
-        @memcpy(self.data[a .. a + self.stride], src.data[b .. b + self.stride]);
+        const copy_size = @min(self.element_size, src.element_size);
+        const dst_offset = dst_row * self.stride;
+        const src_offset = src_row * src.stride;
+        @memcpy(self.data[dst_offset .. dst_offset + copy_size], src.data[src_offset .. src_offset + copy_size]);
     }
 };

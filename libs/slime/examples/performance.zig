@@ -1,16 +1,9 @@
-//! ECS micro-benchmarks (timer-based, not a sampling profiler).
-//! Run: `zig build performance` or `zig build performance -Doptimize=ReleaseFast -- 100000`
-//! Optional arg: entity count (default 20_000).
-
 const std = @import("std");
 const slime = @import("slime");
 
-const Components = struct {
-    pub const P = struct { x: f32, y: f32 };
-    pub const V = struct { vx: f32, vy: f32 };
-};
 
-const World = slime.World(Components);
+const P = struct { x: f32, y: f32 };
+const V = struct { vx: f32, vy: f32 };
 
 fn printRow(name: []const u8, n: usize, ns: u64) void {
     const per = if (n > 0) ns / n else @as(u64, 0);
@@ -21,8 +14,11 @@ fn printRow(name: []const u8, n: usize, ns: u64) void {
     });
 }
 
+
+
 pub fn main() !void {
     const allocator = std.heap.c_allocator;
+
 
     var arg_it = try std.process.argsWithAllocator(allocator);
     defer arg_it.deinit();
@@ -49,56 +45,54 @@ pub fn main() !void {
         \\
     , .{n});
 
-    // --- spawn P+V ---
     {
-        var world = World.init(allocator);
+        var world = slime.World.init(allocator);
         defer world.deinit();
 
         var timer = try std.time.Timer.start();
         var i: usize = 0;
         while (i < n) : (i += 1) {
-            _ = try world.spawn(&.{ Components.P, Components.V }, .{
-                Components.P{ .x = @floatFromInt(i), .y = 0 },
-                Components.V{ .vx = 0, .vy = 0 },
+            _ = try world.spawn(&.{ P, V }, .{
+                P{ .x = @floatFromInt(i), .y = 0 },
+                V{ .vx = 0, .vy = 0 },
             });
         }
         printRow("spawn P+V", n, timer.lap());
 
         timer.reset();
-        var q = world.query(&.{ Components.P, Components.V });
+        var q = world.query(&.{ P, V });
         var c: usize = 0;
         while (q.next()) |_| c += 1;
         printRow("query iterate P+V", n, timer.lap());
         std.debug.assert(c == n);
 
         timer.reset();
-        var qc = world.queryChunked(&.{ Components.P, Components.V }, 256);
+        var qc = world.queryChunked(&.{ P, V }, 256);
         var c2: usize = 0;
         while (qc.next()) |ch| {
             c2 += ch.len;
-            const slice = world.columnSlice(Components.P, ch.archetype_id, ch.start_row, ch.len).?;
+            const slice = world.columnSlice(P, ch.archetype_id, ch.start_row, ch.len).?;
             for (slice) |*p| p.x += 1;
         }
         printRow("chunked + columnSlice P", n, timer.lap());
         std.debug.assert(c2 == n);
 
         timer.reset();
-        var q3 = world.query(&.{Components.P});
+        var q3 = world.query(&.{P});
         while (q3.next()) |hit| {
-            if (world.getMut(hit.entity, Components.P)) |p| p.y += 1;
+            if (world.getMut(hit.entity, P)) |p| p.y += 1;
         }
         printRow("getMut via query P", n, timer.lap());
     }
 
-    // --- prefab spawn ---
     {
-        const blob = try slime.prefab.encodePrefabBinary(Components, allocator, 1, &.{ Components.P, Components.V }, .{
-            Components.P{ .x = 0, .y = 0 },
-            Components.V{ .vx = 1, .vy = 1 },
+        const blob = try slime.prefab.encodePrefabBinary(allocator, 1, &.{ P, V }, .{
+            P{ .x = 0, .y = 0 },
+            V{ .vx = 1, .vy = 1 },
         });
         defer allocator.free(blob);
 
-        var world = World.init(allocator);
+        var world = slime.World.init(allocator);
         defer world.deinit();
 
         var fbs = std.io.fixedBufferStream(blob);
@@ -114,9 +108,8 @@ pub fn main() !void {
         printRow("spawnPrefab (same prefab)", n, timer.lap());
     }
 
-    // --- addComponent: P -> P+V migrate ---
     {
-        var world = World.init(allocator);
+        var world = slime.World.init(allocator);
         defer world.deinit();
 
         var ents: std.ArrayList(slime.Entity) = .{};
@@ -125,22 +118,21 @@ pub fn main() !void {
 
         var i: usize = 0;
         while (i < n) : (i += 1) {
-            const e = try world.spawn(&.{Components.P}, .{
-                Components.P{ .x = @floatFromInt(i), .y = 0 },
+            const e = try world.spawn(&.{P}, .{
+                P{ .x = @floatFromInt(i), .y = 0 },
             });
             try ents.append(allocator, e);
         }
 
         var timer = try std.time.Timer.start();
         for (ents.items) |e| {
-            try world.addComponent(e, Components.V, Components.V{ .vx = 0, .vy = 0 });
+            try world.addComponent(e, V, V{ .vx = 0, .vy = 0 });
         }
         printRow("addComponent V (migrate)", n, timer.lap());
     }
 
-    // --- removeComponent: P+V -> P ---
     {
-        var world = World.init(allocator);
+        var world = slime.World.init(allocator);
         defer world.deinit();
 
         var ents: std.ArrayList(slime.Entity) = .{};
@@ -149,23 +141,22 @@ pub fn main() !void {
 
         var i: usize = 0;
         while (i < n) : (i += 1) {
-            const e = try world.spawn(&.{ Components.P, Components.V }, .{
-                Components.P{ .x = 0, .y = 0 },
-                Components.V{ .vx = 0, .vy = 0 },
+            const e = try world.spawn(&.{ P, V }, .{
+                P{ .x = 0, .y = 0 },
+                V{ .vx = 0, .vy = 0 },
             });
             try ents.append(allocator, e);
         }
 
         var timer = try std.time.Timer.start();
         for (ents.items) |e| {
-            try world.removeComponent(e, Components.V);
+            try world.removeComponent(e, V);
         }
         printRow("removeComponent V (migrate)", n, timer.lap());
     }
 
-    // --- despawn ---
     {
-        var world = World.init(allocator);
+        var world = slime.World.init(allocator);
         defer world.deinit();
 
         var ents: std.ArrayList(slime.Entity) = .{};
@@ -174,9 +165,9 @@ pub fn main() !void {
 
         var i: usize = 0;
         while (i < n) : (i += 1) {
-            const e = try world.spawn(&.{ Components.P, Components.V }, .{
-                Components.P{ .x = 0, .y = 0 },
-                Components.V{ .vx = 0, .vy = 0 },
+            const e = try world.spawn(&.{ P, V }, .{
+                P{ .x = 0, .y = 0 },
+                V{ .vx = 0, .vy = 0 },
             });
             try ents.append(allocator, e);
         }
@@ -193,4 +184,6 @@ pub fn main() !void {
         \\done.
         \\
     , .{});
+
+
 }
