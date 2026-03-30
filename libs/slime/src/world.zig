@@ -95,10 +95,10 @@ pub const World = struct {
         const dst = &self.archetypes.items[dst_id];
         const new_row = try dst.pushBlankRow(self.allocator, e, new_sig);
 
-        var cid: u32 = 0;
-        while (cid < 64) : (cid += 1) {
-            const b = @as(u64, 1) << @intCast(cid);
-            if ((old_sig & new_sig & b) == 0) continue;
+        var remaining = old_sig & new_sig;
+        while (remaining != 0) {
+            const cid = @ctz(remaining);
+            remaining &= remaining - 1;
             const src_col = old_arch.getColumn(cid).?;
             try ensureColumnForExistingRow(self.allocator, dst, cid, src_col.element_size, src_col.element_align);
             const dst_col = dst.getColumn(cid).?;
@@ -156,12 +156,12 @@ pub const World = struct {
         const dst = &self.archetypes.items[dst_id];
         const new_row = try dst.pushBlankRow(self.allocator, e, new_sig);
 
-        var cid: u32 = 0;
-        while (cid < 64) : (cid += 1) {
-            const b = @as(u64, 1) << @intCast(cid);
-            if ((old_sig & new_sig & b) == 0) continue;
-            const dst_col = dst.getColumn(cid).?;
-            const src_col = old_arch.getColumn(cid).?;
+        var remaining = old_sig & new_sig;
+        while (remaining != 0) {
+            const cid = @ctz(remaining);
+            remaining &= remaining - 1;
+            const dst_col = dst.getColumn(@intCast(cid)).?;
+            const src_col = old_arch.getColumn(@intCast(cid)).?;
             dst_col.copyRowFrom(new_row, src_col, old_row);
         }
 
@@ -380,11 +380,11 @@ pub const World = struct {
     }
 
     fn fillPrefabRow(arch: *Archetype, row: u32, sig: u64, reader: anytype) !void {
-        var cid: u32 = 0;
-        while (cid < 64) : (cid += 1) {
-            const b = @as(u64, 1) << @intCast(cid);
-            if ((sig & b) == 0) continue;
-            const col = arch.getColumn(cid).?;
+        var remaining = sig;
+        while (remaining != 0) {
+            const cid = @ctz(remaining);
+            remaining &= remaining - 1;
+            const col = arch.getColumn(@intCast(cid)).?;
             const stride = col.stride;
             var size_bytes: [4]u8 = undefined;
             try reader.readNoEof(&size_bytes);

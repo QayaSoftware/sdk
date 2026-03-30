@@ -70,10 +70,11 @@ pub const Archetype = struct {
         try self.entities.append(allocator, e);
         std.debug.assert(self.entities.items.len == row + 1);
 
-        var cid: u32 = 0;
-        while (cid < 64) : (cid += 1) {
-            if ((sig & (@as(u64, 1) << @as(u6, @intCast(cid)))) == 0) continue;
-            const gop = try self.columns.getOrPut(allocator, cid);
+        var remaining = sig;
+        while (remaining != 0) {
+            const cid = @ctz(remaining);
+            remaining &= remaining - 1;
+            const gop = try self.columns.getOrPut(allocator, @intCast(cid));
             if (!gop.found_existing) {
                 gop.value_ptr.* = Column.init(allocator, 16, 1);
             }

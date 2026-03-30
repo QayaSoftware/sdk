@@ -17,6 +17,8 @@ pub fn masksConflict(a: Masks, b: Masks) bool {
 pub const Schedule = struct {
     allocator: std.mem.Allocator,
     systems: std.ArrayListUnmanaged(SystemEntry),
+    cached_masks: ?[]Masks = null,
+    cached_batches: ?[]const []const usize = null,
 
     const SystemEntry = struct {
         run: *const fn (*World) anyerror!void,
@@ -33,6 +35,19 @@ pub const Schedule = struct {
 
     pub fn deinit(self: *@This()) void {
         self.systems.deinit(self.allocator);
+        if (self.cached_masks) |m| self.allocator.free(m);
+        if (self.cached_batches) |b| freeBatches(self.allocator, b);
+    }
+
+    fn invalidateCache(self: *@This()) void {
+        if (self.cached_masks) |m| {
+            self.allocator.free(m);
+            self.cached_masks = null;
+        }
+        if (self.cached_batches) |b| {
+            freeBatches(self.allocator, b);
+            self.cached_batches = null;
+        }
     }
 
     pub fn addWithMasks(
@@ -41,6 +56,7 @@ pub const Schedule = struct {
         comptime write: []const type,
         comptime f: *const fn (*World) anyerror!void,
     ) !void {
+        self.invalidateCache();
         try self.systems.append(self.allocator, .{
             .run = f,
             .read_mask = registry.maskMany(read),
@@ -58,18 +74,20 @@ pub const Schedule = struct {
         }
     }
 
-    pub fn runParallel(self: *const @This(), world: *World, pool: *std.Thread.Pool) !void {
+    pub fn runParallel(self: *@This(), world: *World, pool: *std.Thread.Pool) !void {
         const sys = self.systems.items;
         if (sys.len == 0) return;
 
-        const masks = try self.allocator.alloc(Masks, sys.len);
-        defer self.allocator.free(masks);
-        for (sys, 0..) |e, i| {
-            masks[i] = .{ .read_mask = e.read_mask, .write_mask = e.write_mask };
+        if (self.cached_masks == null) {
+            const masks = try self.allocator.alloc(Masks, sys.len);
+            for (sys, 0..) |e, i| {
+                masks[i] = .{ .read_mask = e.read_mask, .write_mask = e.write_mask };
+            }
+            self.cached_masks = masks;
+            self.cached_batches = try computeBatchesFromMasks(self.allocator, masks);
         }
 
-        const batches = try computeBatchesFromMasks(self.allocator, masks);
-        defer freeBatches(self.allocator, batches);
+        const batches = self.cached_batches.?;
 
         for (batches) |batch| {
             var wg: std.Thread.WaitGroup = .{};
