@@ -1,27 +1,20 @@
-//! Parallel schedule: `Thread.Pool` + mask batching (systems that do not conflict run together).
-
 const std = @import("std");
 const slime = @import("slime");
 
-const Components = struct {
-    pub const P = struct { x: f32 };
-    pub const V = struct { y: f32 };
-};
+const P = struct { x: f32 };
+const V = struct { y: f32 };
 
-const World = slime.World(Components);
-const Schedule = slime.schedule.Schedule(Components);
-
-fn incP(world: *World) !void {
-    var q = world.query(&.{Components.P});
+fn incP(world: *slime.World) !void {
+    var q = world.query(&.{P});
     while (q.next()) |hit| {
-        if (world.getMut(hit.entity, Components.P)) |p| p.x += 1;
+        if (world.getMut(hit.entity, P)) |p| p.x += 1;
     }
 }
 
-fn incV(world: *World) !void {
-    var q = world.query(&.{Components.V});
+fn incV(world: *slime.World) !void {
+    var q = world.query(&.{V});
     while (q.next()) |hit| {
-        if (world.getMut(hit.entity, Components.V)) |v| v.y += 2;
+        if (world.getMut(hit.entity, V)) |v| v.y += 2;
     }
 }
 
@@ -30,21 +23,21 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var world = World.init(allocator);
+    var world = slime.World.init(allocator);
     defer world.deinit();
 
     var i: usize = 0;
     while (i < 500) : (i += 1) {
-        _ = try world.spawn(&.{ Components.P, Components.V }, .{
-            Components.P{ .x = 0 },
-            Components.V{ .y = 0 },
+        _ = try world.spawn(&.{ P, V }, .{
+            P{ .x = 0 },
+            V{ .y = 0 },
         });
     }
 
-    var sched = Schedule.init(allocator);
+    var sched = slime.Schedule.init(allocator);
     defer sched.deinit();
-    try sched.addWithMasks(&.{Components.P}, &.{Components.P}, incP);
-    try sched.addWithMasks(&.{Components.V}, &.{Components.V}, incV);
+    try sched.addWithMasks(&.{P}, &.{P}, incP);
+    try sched.addWithMasks(&.{V}, &.{V}, incV);
 
     var pool: std.Thread.Pool = undefined;
     try pool.init(.{ .allocator = allocator, .n_jobs = 4 });
@@ -54,10 +47,10 @@ pub fn main() !void {
 
     var sum_p: f32 = 0;
     var sum_v: f32 = 0;
-    var qp = world.query(&.{Components.P});
-    while (qp.next()) |hit| sum_p += world.get(hit.entity, Components.P).?.x;
-    var qv = world.query(&.{Components.V});
-    while (qv.next()) |hit| sum_v += world.get(hit.entity, Components.V).?.y;
+    var qp = world.query(&.{P});
+    while (qp.next()) |hit| sum_p += world.get(hit.entity, P).?.x;
+    var qv = world.query(&.{V});
+    while (qv.next()) |hit| sum_v += world.get(hit.entity, V).?.y;
 
     std.debug.print("parallel example - entities: {}, sum(P.x)={d:.0} (expect {}), sum(V.y)={d:.0} (expect {})\n", .{
         i,

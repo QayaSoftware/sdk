@@ -1,6 +1,7 @@
 const std = @import("std");
 const Column = @import("column.zig").Column;
 const Entity = @import("entity.zig").Entity;
+const registry = @import("registry.zig");
 
 pub const ArchetypeId = u32;
 
@@ -9,6 +10,7 @@ pub const Archetype = struct {
     id: ArchetypeId,
     entities: std.ArrayListUnmanaged(Entity),
     columns: std.AutoArrayHashMapUnmanaged(u32, Column),
+    column_sizes: std.AutoArrayHashMapUnmanaged(u32, usize),
 
     pub fn deinit(self: *Archetype, allocator: std.mem.Allocator) void {
         var it = self.columns.iterator();
@@ -16,6 +18,7 @@ pub const Archetype = struct {
             e.value_ptr.deinit(allocator);
         }
         self.columns.deinit(allocator);
+        self.column_sizes.deinit(allocator);
         self.entities.deinit(allocator);
     }
 
@@ -23,7 +26,6 @@ pub const Archetype = struct {
         self: *Archetype,
         allocator: std.mem.Allocator,
         e: Entity,
-        comptime Info: type,
         sig: u64,
         comptime types: []const type,
         values: anytype,
@@ -31,78 +33,78 @@ pub const Archetype = struct {
         std.debug.assert(self.signature == sig);
         const row = self.entities.items.len;
 
-        var cid: u32 = 0;
-        while (cid < 64) : (cid += 1) {
-            if ((sig >> @intCast(cid)) & 1 == 0) continue;
-            const gop = try self.columns.getOrPut(allocator, cid);
-            if (!gop.found_existing) {
-                gop.value_ptr.* = Column.init(allocator, Info.elementSize(cid), Info.elementAlign(cid));
-            }
-            _ = try gop.value_ptr.pushUninitialized(allocator);
-        }
-
         try self.entities.append(allocator, e);
         std.debug.assert(self.entities.items.len == row + 1);
 
         inline for (0..types.len) |vi| {
             const CT = types[vi];
-            const idv = comptime Info.id(CT);
-            const col = self.columns.getPtr(idv).?;
-            const dst = col.rowPtr(row)[0..@sizeOf(CT)];
+            const cid = registry.id(CT);
+            const stride = registry.elementStride(CT);
+            const size = @sizeOf(CT);
+
+            const gop = try self.columns.getOrPut(allocator, cid);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = Column.init(allocator, size, registry.elementAlign(CT));
+                try self.column_sizes.put(allocator, cid, stride);
+            }
+            _ = try gop.value_ptr.pushUninitialized(allocator);
+
+            const col = self.columns.getPtr(cid).?;
+            const dst = col.rowPtr(row)[0..size];
             var tmp = values[vi];
-            @memcpy(dst, std.mem.asBytes(&tmp)[0..@sizeOf(CT)]);
+            @memcpy(dst, std.mem.asBytes(&tmp)[0..size]);
         }
 
         return row;
     }
 
-    /// Adds a row with uninitialized component storage for every bit in `sig`. Caller fills via `copyRowFrom` / writes.
     pub fn pushBlankRow(
         self: *Archetype,
         allocator: std.mem.Allocator,
         e: Entity,
-        comptime Info: type,
         sig: u64,
     ) !usize {
         std.debug.assert(self.signature == sig);
         const row = self.entities.items.len;
 
-        var cid: u32 = 0;
-        while (cid < 64) : (cid += 1) {
-            if ((sig >> @intCast(cid)) & 1 == 0) continue;
-            const gop = try self.columns.getOrPut(allocator, cid);
+        try self.entities.append(allocator, e);
+        std.debug.assert(self.entities.items.len == row + 1);
+
+        var remaining = sig;
+        while (remaining != 0) {
+            const cid = @ctz(remaining);
+            remaining &= remaining - 1;
+            const gop = try self.columns.getOrPut(allocator, @intCast(cid));
             if (!gop.found_existing) {
-                gop.value_ptr.* = Column.init(allocator, Info.elementSize(cid), Info.elementAlign(cid));
+                gop.value_ptr.* = Column.init(allocator, 16, 1);
             }
             _ = try gop.value_ptr.pushUninitialized(allocator);
         }
 
-        try self.entities.append(allocator, e);
-        std.debug.assert(self.entities.items.len == row + 1);
         return row;
+    }
+
+    pub fn ensureColumn(self: *Archetype, allocator: std.mem.Allocator, cid: u32, comptime T: type) !void {
+        const size = @sizeOf(T);
+        const align_val = registry.elementAlign(T);
+        const stride = registry.elementStride(T);
+
+        if (self.columns.getPtr(cid)) |col| {
+            if (col.element_size >= size) return;
+            col.deinit(allocator);
+            col.* = Column.init(allocator, size, align_val);
+            try self.column_sizes.put(allocator, cid, stride);
+            return;
+        }
+
+        try self.columns.put(allocator, cid, Column.init(allocator, size, align_val));
+        try self.column_sizes.put(allocator, cid, stride);
     }
 
     pub fn getColumn(self: *Archetype, cid: u32) ?*Column {
         return self.columns.getPtr(cid);
     }
 
-    pub fn copySharedComponents(
-        dst: *Archetype,
-        dst_row: usize,
-        src: *const Archetype,
-        src_row: usize,
-        comptime Info: type,
-        comptime shared: []const type,
-    ) void {
-        inline for (shared) |CT| {
-            const cid = comptime Info.id(CT);
-            const dst_col = dst.getColumn(cid).?;
-            const src_col = src.getColumn(cid).?;
-            dst_col.copyRowFrom(dst_row, src_col, src_row);
-        }
-    }
-
-    /// Removes `row` with swap-remove. Returns the entity that moved into `row`, if any.
     pub fn swapRemoveRow(self: *Archetype, _: std.mem.Allocator, row: usize) !?Entity {
         std.debug.assert(row < self.entities.items.len);
         if (self.entities.items.len == 1) {
@@ -145,6 +147,7 @@ pub fn create(
         .id = id,
         .entities = .empty,
         .columns = .empty,
+        .column_sizes = .empty,
     };
     errdefer arch.deinit(allocator);
     try arch.entities.ensureTotalCapacity(allocator, 4);

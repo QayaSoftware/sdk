@@ -9,20 +9,19 @@ Prefabs for slime are essentially an id, mask and a set of components. There is 
 
 ## Performance
 Take these numbers with a grain of salt just like any performance tests. But for those of you who like numbers i guess here we go.
-
-Tested on an i7 12700f:
+Tested on an AMD Ryzen AI MAX+ 395.
 
 ```
 benchmark                         n      total_ms    ns/entity
 ----------------------------------------------------------------
-spawn P+V                      1000000     67.586 ms             67 ns/op
-query iterate P+V              1000000      0.371 ms              0 ns/op
-chunked + columnSlice P        1000000      0.595 ms              0 ns/op
-getMut via query P             1000000      3.722 ms              3 ns/op
-spawnPrefab (same prefab)      1000000     65.897 ms             65 ns/op
-addComponent V (migrate)       1000000     80.321 ms             80 ns/op
-removeComponent V (migrate)    1000000     75.255 ms             75 ns/op
-despawn                        1000000      8.620 ms              8 ns/op
+spawn P+V                      1000000     52.847 ms             52 ns/op
+query iterate P+V              1000000      0.701 ms              0 ns/op
+chunked + columnSlice P        1000000      1.040 ms              1 ns/op
+getMut via query P             1000000      8.182 ms              8 ns/op
+spawnPrefab (same prefab)      1000000     63.061 ms             63 ns/op
+addComponent V (migrate)       1000000     74.040 ms             74 ns/op
+removeComponent V (migrate)    1000000     49.913 ms             49 ns/op
+despawn                        1000000      9.569 ms              9 ns/op
 ```
 
 Tested on a MacBook Pro, Apple M4 Pro, 24GB, Tahoe 26.4:
