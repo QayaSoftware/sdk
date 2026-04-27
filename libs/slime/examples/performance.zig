@@ -1,26 +1,22 @@
 const std = @import("std");
 const slime = @import("slime");
 
-
 const P = struct { x: f32, y: f32 };
 const V = struct { vx: f32, vy: f32 };
 
-fn printRow(name: []const u8, n: usize, ns: u64) void {
-    const per = if (n > 0) ns / n else @as(u64, 0);
-    const ms_whole = ns / 1_000_000;
-    const ms_frac: u64 = (ns % 1_000_000) / 1000;
+fn printRow(name: []const u8, n: usize, ns: i96) void {
+    const per = if (n > 0) @divTrunc(ns, n) else @as(u64, 0);
+    const ms_whole = @divTrunc(ns, 1_000_000);
+    const ms_frac: u64 = @intCast((@divFloor(@mod(ns, 1_000_000), 1000)));
     std.debug.print("{s:<28} {d:>9} {d:>6}.{d:0>3} ms {d:>14} ns/op\n", .{
         name, n, ms_whole, ms_frac, per,
     });
 }
 
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.arena.allocator();
 
-
-pub fn main() !void {
-    const allocator = std.heap.c_allocator;
-
-
-    var arg_it = try std.process.argsWithAllocator(allocator);
+    var arg_it = try init.minimal.args.iterateAllocator(allocator);
     defer arg_it.deinit();
     _ = arg_it.next();
 
@@ -36,7 +32,6 @@ pub fn main() !void {
     }
 
     std.debug.print(
-        \\slime performance (std.time.Timer)
         \\entity count: {d}  (pass a number as argv to change, e.g. zig build performance -- 50000)
         \\use ReleaseFast for meaningful numbers: zig build performance -Doptimize=ReleaseFast
         \\
@@ -48,25 +43,26 @@ pub fn main() !void {
     {
         var world = slime.World.init(allocator);
         defer world.deinit();
-
-        var timer = try std.time.Timer.start();
         var i: usize = 0;
+
+        var now = std.Io.Clock.now(.awake, init.io);
         while (i < n) : (i += 1) {
             _ = try world.spawn(&.{ P, V }, .{
                 P{ .x = @floatFromInt(i), .y = 0 },
                 V{ .vx = 0, .vy = 0 },
             });
         }
-        printRow("spawn P+V", n, timer.lap());
+        printRow("spawn P+V", n, std.Io.Clock.now(.awake, init.io).nanoseconds - now.nanoseconds);
+        now = std.Io.Clock.now(.awake, init.io);
 
-        timer.reset();
         var q = world.query(&.{ P, V });
         var c: usize = 0;
         while (q.next()) |_| c += 1;
-        printRow("query iterate P+V", n, timer.lap());
+        printRow("query iterate P+V", n, std.Io.Clock.now(.awake, init.io).nanoseconds - now.nanoseconds);
         std.debug.assert(c == n);
 
-        timer.reset();
+        now = std.Io.Clock.now(.awake, init.io);
+
         var qc = world.queryChunked(&.{ P, V }, 256);
         var c2: usize = 0;
         while (qc.next()) |ch| {
@@ -74,15 +70,15 @@ pub fn main() !void {
             const slice = world.columnSlice(P, ch.archetype_id, ch.start_row, ch.len).?;
             for (slice) |*p| p.x += 1;
         }
-        printRow("chunked + columnSlice P", n, timer.lap());
+        printRow("chunked + columnSlice P", n, std.Io.Clock.now(.awake, init.io).nanoseconds - now.nanoseconds);
         std.debug.assert(c2 == n);
+        now = std.Io.Clock.now(.awake, init.io);
 
-        timer.reset();
         var q3 = world.query(&.{P});
         while (q3.next()) |hit| {
             if (world.getMut(hit.entity, P)) |p| p.y += 1;
         }
-        printRow("getMut via query P", n, timer.lap());
+        printRow("getMut via query P", n, std.Io.Clock.now(.awake, init.io).nanoseconds - now.nanoseconds);
     }
 
     {
@@ -91,28 +87,27 @@ pub fn main() !void {
             V{ .vx = 1, .vy = 1 },
         });
         defer allocator.free(blob);
-
         var world = slime.World.init(allocator);
         defer world.deinit();
 
-        var fbs = std.io.fixedBufferStream(blob);
-        var owned = try slime.prefab.readPrefabBinary(allocator, fbs.reader());
+        var fbsw = std.Io.Reader.fixed(blob);
+        var owned = try slime.prefab.readPrefabBinary(allocator, &fbsw);
         defer owned.deinit(allocator);
         const prefab_ref = owned.asRef();
 
-        var timer = try std.time.Timer.start();
+        const now = std.Io.Clock.now(.awake, init.io);
         var i: usize = 0;
         while (i < n) : (i += 1) {
             _ = try world.spawnPrefab(prefab_ref);
         }
-        printRow("spawnPrefab (same prefab)", n, timer.lap());
+        printRow("spawnPrefab (same prefab)", n, std.Io.Clock.now(.awake, init.io).nanoseconds - now.nanoseconds);
     }
 
     {
         var world = slime.World.init(allocator);
         defer world.deinit();
 
-        var ents: std.ArrayList(slime.Entity) = .{};
+        var ents: std.ArrayList(slime.Entity) = .empty;
         defer ents.deinit(allocator);
         try ents.ensureTotalCapacity(allocator, n);
 
@@ -124,18 +119,19 @@ pub fn main() !void {
             try ents.append(allocator, e);
         }
 
-        var timer = try std.time.Timer.start();
+        const now = std.Io.Clock.now(.awake, init.io);
+
         for (ents.items) |e| {
             try world.addComponent(e, V, V{ .vx = 0, .vy = 0 });
         }
-        printRow("addComponent V (migrate)", n, timer.lap());
+        printRow("addComponent V (migrate)", n, std.Io.Clock.now(.awake, init.io).nanoseconds - now.nanoseconds);
     }
 
     {
         var world = slime.World.init(allocator);
         defer world.deinit();
 
-        var ents: std.ArrayList(slime.Entity) = .{};
+        var ents: std.ArrayList(slime.Entity) = .empty;
         defer ents.deinit(allocator);
         try ents.ensureTotalCapacity(allocator, n);
 
@@ -148,18 +144,18 @@ pub fn main() !void {
             try ents.append(allocator, e);
         }
 
-        var timer = try std.time.Timer.start();
+        const now = std.Io.Clock.now(.awake, init.io);
         for (ents.items) |e| {
             try world.removeComponent(e, V);
         }
-        printRow("removeComponent V (migrate)", n, timer.lap());
+        printRow("removeComponent V (migrate)", n, std.Io.Clock.now(.awake, init.io).nanoseconds - now.nanoseconds);
     }
 
     {
         var world = slime.World.init(allocator);
         defer world.deinit();
 
-        var ents: std.ArrayList(slime.Entity) = .{};
+        var ents: std.ArrayList(slime.Entity) = .empty;
         defer ents.deinit(allocator);
         try ents.ensureTotalCapacity(allocator, n);
 
@@ -172,11 +168,11 @@ pub fn main() !void {
             try ents.append(allocator, e);
         }
 
-        var timer = try std.time.Timer.start();
+        const now = std.Io.Clock.now(.awake, init.io);
         for (ents.items) |e| {
             world.despawn(e);
         }
-        printRow("despawn", n, timer.lap());
+        printRow("despawn", n, std.Io.Clock.now(.awake, init.io).nanoseconds - now.nanoseconds);
     }
 
     std.debug.print(
@@ -184,6 +180,4 @@ pub fn main() !void {
         \\done.
         \\
     , .{});
-
-
 }

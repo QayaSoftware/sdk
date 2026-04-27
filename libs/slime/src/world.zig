@@ -8,27 +8,43 @@ const Column = @import("column.zig").Column;
 const registry = @import("registry.zig");
 const serialize = @import("serialize.zig");
 const prefab_mod = @import("prefab.zig");
+const ResourcePool = @import("ResourcePool.zig");
+const EventChannel = @import("EventChannel.zig").EventChannel;
+const schedule = @import("schedule.zig");
+
+const options = @import("options");
+const thred_safe = options.thread_safe;
 
 pub const World = struct {
     allocator: std.mem.Allocator,
     archetypes: std.ArrayListUnmanaged(Archetype),
-    archetype_by_sig: std.AutoHashMapUnmanaged(u64, ArchetypeId),
+    archetype_by_sig: std.AutoHashMapUnmanaged(u1024, ArchetypeId),
     entities: std.ArrayListUnmanaged(EntitySlot),
     free_slots: std.ArrayListUnmanaged(u32),
+    resources: ResourcePool,
+    scheduler: schedule.Scheduler,
+    event_flush_fns: std.ArrayListUnmanaged(*const fn (*ResourcePool) void),
+    ecs_writing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) Self {
+        var res: ResourcePool = undefined;
+        res.init(allocator);
         return .{
             .allocator = allocator,
             .archetypes = .empty,
             .archetype_by_sig = .empty,
             .entities = .empty,
             .free_slots = .empty,
+            .resources = res,
+            .event_flush_fns = .empty,
+            .scheduler = schedule.Scheduler.init(allocator) catch unreachable,
         };
     }
 
     pub fn deinit(self: *Self) void {
+        self.scheduler.deinit();
         for (self.archetypes.items) |*a| {
             a.deinit(self.allocator);
         }
@@ -36,7 +52,51 @@ pub const World = struct {
         self.archetype_by_sig.deinit(self.allocator);
         self.entities.deinit(self.allocator);
         self.free_slots.deinit(self.allocator);
+        self.event_flush_fns.deinit(self.allocator);
+        self.resources.deinit();
     }
+
+    // ---- Lock helpers -------------------------------------------------------
+
+    pub fn lockShared(self: *Self) void {
+        if (!options.thread_safe) {
+            return;
+        }
+        while (true) {
+            if ((self.ecs_writing.cmpxchgWeak(false, true, .acquire, .acquire) orelse false)) {
+                break;
+            }
+            std.atomic.spinLoopHint();
+        }
+    }
+
+    pub fn unlockShared(self: *Self) void {
+        if (!options.thread_safe) {
+            return;
+        }
+        self.ecs_writing.store(false, .release);
+    }
+
+    pub fn lock(self: *Self) void {
+        if (!options.thread_safe) {
+            return;
+        }
+        while (true) {
+            if ((self.ecs_writing.cmpxchgWeak(false, true, .acquire, .acquire) orelse false)) {
+                break;
+            }
+            std.atomic.spinLoopHint();
+        }
+    }
+
+    pub fn unlock(self: *Self) void {
+        if (!options.thread_safe) {
+            return;
+        }
+        self.ecs_writing.store(false, .release);
+    }
+
+    // ---- Entity lifecycle ---------------------------------------------------
 
     pub fn isAlive(self: *const Self, e: Entity) bool {
         if (e.index >= self.entities.items.len) return false;
@@ -45,6 +105,9 @@ pub const World = struct {
     }
 
     pub fn spawn(self: *Self, comptime types: []const type, values: anytype) !Entity {
+        self.lock();
+        defer self.unlock();
+
         if (types.len != 0) {
             const V = @TypeOf(values);
             const fields = std.meta.fields(V);
@@ -66,6 +129,8 @@ pub const World = struct {
     }
 
     pub fn despawn(self: *Self, e: Entity) void {
+        self.lock();
+        defer self.unlock();
         if (!self.isAlive(e)) return;
         const slot = &self.entities.items[e.index];
         const arch = &self.archetypes.items[slot.archetype];
@@ -81,6 +146,8 @@ pub const World = struct {
     }
 
     pub fn addComponent(self: *Self, e: Entity, comptime T: type, value: T) !void {
+        self.lock();
+        defer self.unlock();
         if (!self.isAlive(e)) return error.DeadEntity;
         const slot = &self.entities.items[e.index];
         const old_arch_id = slot.archetype;
@@ -142,6 +209,8 @@ pub const World = struct {
     }
 
     pub fn removeComponent(self: *Self, e: Entity, comptime T: type) !void {
+        self.lock();
+        defer self.unlock();
         if (!self.isAlive(e)) return error.DeadEntity;
         const slot = &self.entities.items[e.index];
         const old_arch_id = slot.archetype;
@@ -175,6 +244,8 @@ pub const World = struct {
         slot.archetype = dst_id;
         slot.row = @intCast(new_row);
     }
+
+    // ---- Component access ---------------------------------------------------
 
     pub fn get(self: *Self, e: Entity, comptime T: type) ?T {
         if (!self.isAlive(e)) return null;
@@ -218,7 +289,7 @@ pub const World = struct {
         return .{ .index = idx, .generation = 0 };
     }
 
-    fn ensureArchetype(self: *Self, sig: u64) !ArchetypeId {
+    fn ensureArchetype(self: *Self, sig: u1024) !ArchetypeId {
         const gop = try self.archetype_by_sig.getOrPut(self.allocator, sig);
         if (gop.found_existing) return gop.value_ptr.*;
 
@@ -229,6 +300,8 @@ pub const World = struct {
         gop.value_ptr.* = id;
         return id;
     }
+
+    // ---- Queries ------------------------------------------------------------
 
     pub fn query(self: *Self, comptime with: []const type) QueryIter {
         return .{
@@ -243,7 +316,7 @@ pub const World = struct {
         world: *Self,
         arch_index: usize,
         row: usize,
-        required_mask: u64,
+        required_mask: u1024,
 
         pub fn next(self: *QueryIter) ?struct {
             entity: Entity,
@@ -263,11 +336,7 @@ pub const World = struct {
                     const r: u32 = @intCast(self.row);
                     const aid = arch.id;
                     self.row += 1;
-                    return .{
-                        .entity = e,
-                        .archetype = aid,
-                        .row = r,
-                    };
+                    return .{ .entity = e, .archetype = aid, .row = r };
                 }
                 self.arch_index += 1;
                 self.row = 0;
@@ -291,12 +360,12 @@ pub const World = struct {
         world: *Self,
         arch_index: usize,
         row: usize,
-        required_mask: u64,
+        required_mask: u1024,
         chunk_size: usize,
 
         pub fn next(self: *QueryChunkIter) ?struct {
             archetype_id: ArchetypeId,
-            signature: u64,
+            signature: u1024,
             start_row: usize,
             len: usize,
             entities: []const Entity,
@@ -320,13 +389,7 @@ pub const World = struct {
                         self.arch_index += 1;
                         self.row = 0;
                     }
-                    return .{
-                        .archetype_id = arch.id,
-                        .signature = arch.signature,
-                        .start_row = start,
-                        .len = take,
-                        .entities = slice,
-                    };
+                    return .{ .archetype_id = arch.id, .signature = arch.signature, .start_row = start, .len = take, .entities = slice };
                 }
                 self.arch_index += 1;
                 self.row = 0;
@@ -350,10 +413,10 @@ pub const World = struct {
         return std.mem.bytesAsSlice(T, aligned);
     }
 
+    // ---- Reset & Prefab -----------------------------------------------------
+
     pub fn reset(self: *Self) void {
-        for (self.archetypes.items) |*a| {
-            a.deinit(self.allocator);
-        }
+        for (self.archetypes.items) |*a| a.deinit(self.allocator);
         self.archetypes.clearRetainingCapacity();
         self.archetype_by_sig.clearRetainingCapacity();
         self.entities.clearRetainingCapacity();
@@ -361,6 +424,8 @@ pub const World = struct {
     }
 
     pub fn spawnPrefab(self: *Self, prefab: prefab_mod.PrefabRef) !Entity {
+        self.lock();
+        defer self.unlock();
         const sig = prefab.signature;
         const e = try self.allocEntity();
         const arch_id = try self.ensureArchetype(sig);
@@ -373,13 +438,12 @@ pub const World = struct {
             .archetype = arch_id,
             .row = row,
         };
-        var fbs = std.io.fixedBufferStream(prefab.data);
-        const r = fbs.reader();
-        try fillPrefabRow(arch, row, sig, r);
+        var fbs = std.Io.Reader.fixed(prefab.data);
+        try fillPrefabRow(arch, row, sig, &fbs);
         return e;
     }
 
-    fn fillPrefabRow(arch: *Archetype, row: u32, sig: u64, reader: anytype) !void {
+    fn fillPrefabRow(arch: *Archetype, row: u32, sig: u1024, reader: anytype) !void {
         var remaining = sig;
         while (remaining != 0) {
             const cid = @ctz(remaining);
@@ -387,154 +451,78 @@ pub const World = struct {
             const col = arch.getColumn(@intCast(cid)).?;
             const stride = col.stride;
             var size_bytes: [4]u8 = undefined;
-            try reader.readNoEof(&size_bytes);
+            try reader.readSliceAll(&size_bytes);
             const size = std.mem.readInt(u32, &size_bytes, .little);
             const offset = @as(usize, @intCast(row)) * stride;
-            try reader.readNoEof(col.data[offset..][0..size]);
+            try reader.readSliceAll(col.data[offset..][0..size]);
         }
     }
 
-    pub fn writeSnapshot(self: *Self, writer: anytype) !void {
-        const snapshot_magic: u32 = 0x4D4C4953;
-        const snapshot_version: u32 = 1;
-        try writeU32(writer, snapshot_magic);
-        try writeU32(writer, snapshot_version);
-        try writeU32(writer, @intCast(self.entities.items.len));
+    // ---- Resources ----------------------------------------------------------
 
-        var nonempty: usize = 0;
-        for (self.archetypes.items) |a| {
-            if (a.entities.items.len > 0) nonempty += 1;
-        }
-        try writeU32(writer, @intCast(nonempty));
-
-        for (self.archetypes.items) |*arch| {
-            const rows = arch.entities.items.len;
-            if (rows == 0) continue;
-
-            try writeU64(writer, arch.signature);
-            try writeU32(writer, @intCast(rows));
-
-            for (arch.entities.items) |e| {
-                try writeEntity(writer, e);
-            }
-
-            var cid: u32 = 0;
-            while (cid < 64) : (cid += 1) {
-                const b = @as(u64, 1) << @intCast(cid);
-                if ((arch.signature & b) == 0) continue;
-                const col = arch.getColumn(cid).?;
-                try writeU32(writer, @intCast(col.element_size));
-                const total = col.element_size * rows;
-                try writer.writeAll(col.data[0..total]);
-            }
-        }
+    pub fn insertResource(self: *Self, value: anytype) void {
+        self.resources.add(value) catch |err| switch (err) {
+            error.ResourceAlreadyExists => @panic("insertResource: type already registered"),
+            else => @panic("insertResource: OOM"),
+        };
     }
 
-    pub fn readSnapshot(self: *Self, reader: anytype) !void {
-        const snapshot_magic: u32 = 0x4D4C4953;
-        const snapshot_version: u32 = 1;
+    pub fn insertResourceIfAbsent(self: *Self, value: anytype) void {
+        self.resources.add(value) catch {};
+    }
 
-        const magic = try readU32(reader);
-        if (magic != snapshot_magic) return error.InvalidSnapshot;
-        const ver = try readU32(reader);
-        if (ver != snapshot_version) return error.UnsupportedSnapshotVersion;
+    pub fn insertOwnedResource(self: *Self, comptime T: type, ptr: *T) void {
+        self.resources.addOwned(T, ptr) catch |err| switch (err) {
+            error.ResourceAlreadyExists => @panic("insertOwnedResource: type already registered"),
+            else => @panic("insertOwnedResource: OOM"),
+        };
+    }
 
-        const slot_capacity = try readU32(reader);
-        const arch_count = try readU32(reader);
+    pub fn getResource(self: *Self, comptime T: type) ?*const T {
+        return self.resources.get(T);
+    }
 
-        self.reset();
+    pub fn getMutResource(self: *Self, comptime T: type) ?*T {
+        return self.resources.getMut(T);
+    }
 
-        while (self.entities.items.len < slot_capacity) {
-            try self.entities.append(self.allocator, .{
-                .generation = 0,
-                .alive = false,
-                .archetype = 0,
-                .row = 0,
-            });
-        }
+    pub fn hasResource(self: *Self, comptime T: type) bool {
+        return self.resources.has(T);
+    }
 
-        var aidx: u32 = 0;
-        while (aidx < arch_count) : (aidx += 1) {
-            const sig = try readU64(reader);
-            const rows: u32 = try readU32(reader);
+    // ---- Events -------------------------------------------------------------
 
-            const aid = try self.ensureArchetype(sig);
-            const arch = &self.archetypes.items[aid];
-
-            var r: u32 = 0;
-            while (r < rows) : (r += 1) {
-                const e = try readEntity(reader);
-                while (self.entities.items.len <= e.index) {
-                    try self.entities.append(self.allocator, .{
-                        .generation = 0,
-                        .alive = false,
-                        .archetype = 0,
-                        .row = 0,
-                    });
-                }
-                const row = try arch.pushBlankRow(self.allocator, e, sig);
-                self.entities.items[e.index] = .{
-                    .generation = e.generation,
-                    .alive = true,
-                    .archetype = aid,
-                    .row = @intCast(row),
-                };
+    pub fn addEvent(self: *Self, comptime E: type) void {
+        if (self.resources.has(EventChannel(E))) return;
+        self.resources.add(EventChannel(E).init(self.allocator)) catch
+            @panic("addEvent: OOM");
+        self.event_flush_fns.append(self.allocator, struct {
+            fn update(pool: *ResourcePool) void {
+                if (pool.getMut(EventChannel(E))) |ch| ch.update();
             }
+        }.update) catch @panic("addEvent: OOM");
+    }
 
-            var cid: u32 = 0;
-            while (cid < 64) : (cid += 1) {
-                const b = @as(u64, 1) << @intCast(cid);
-                if ((sig & b) == 0) continue;
-                var size_bytes: [4]u8 = undefined;
-                try reader.readNoEof(&size_bytes);
-                const elem_size = std.mem.readInt(u32, &size_bytes, .little);
-                try ensureColumnForExistingRow(self.allocator, arch, cid, elem_size, 1);
-                const col = arch.getColumn(cid).?;
-                const total = elem_size * rows;
-                try reader.readNoEof(col.data[0..total]);
-            }
-        }
+    pub fn sendEvent(self: *Self, event: anytype) void {
+        const E = @TypeOf(event);
+        const ch = self.resources.getMut(EventChannel(E)) orelse
+            @panic("sendEvent: event type not registered, call addEvent first");
+        ch.send(event) catch @panic("sendEvent: OOM");
+    }
+
+    pub fn readEvents(self: *Self, comptime E: type) EventChannel(E).EventReader {
+        const ch = self.resources.get(EventChannel(E)) orelse
+            return .{ .old = &.{}, .new = &.{} };
+        return ch.read();
+    }
+
+    pub fn updateEvents(self: *Self) void {
+        for (self.event_flush_fns.items) |f| f(&self.resources);
     }
 };
-
-fn writeU32(w: anytype, v: u32) !void {
-    var b: [4]u8 = undefined;
-    std.mem.writeInt(u32, &b, v, .little);
-    try w.writeAll(&b);
-}
-
-fn writeU64(w: anytype, v: u64) !void {
-    var b: [8]u8 = undefined;
-    std.mem.writeInt(u64, &b, v, .little);
-    try w.writeAll(&b);
-}
-
-fn readU32(r: anytype) !u32 {
-    var b: [4]u8 = undefined;
-    try r.readNoEof(&b);
-    return std.mem.readInt(u32, &b, .little);
-}
-
-fn readU64(r: anytype) !u64 {
-    var b: [8]u8 = undefined;
-    try r.readNoEof(&b);
-    return std.mem.readInt(u64, &b, .little);
-}
-
-fn writeEntity(writer: anytype, e: Entity) !void {
-    const u = @as(u64, @bitCast(e));
-    try writeU64(writer, u);
-}
-
-fn readEntity(reader: anytype) !Entity {
-    const u = try readU64(reader);
-    return @bitCast(u);
-}
 
 pub const Error = error{
     DeadEntity,
     AlreadyHasComponent,
     MissingComponent,
-    InvalidSnapshot,
-    UnsupportedSnapshotVersion,
 };

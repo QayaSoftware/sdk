@@ -136,7 +136,7 @@ test "prefab binary truncated payload" {
     try appendU32(&list, std.testing.allocator, prefab.prefab_magic);
     try appendU32(&list, std.testing.allocator, prefab.prefab_version);
     try appendU32(&list, std.testing.allocator, 1);
-    try appendU64(&list, std.testing.allocator, 1);
+    try appendU1024(&list, std.testing.allocator, 1);
     try appendU32(&list, std.testing.allocator, 1000);
     try list.appendSlice(std.testing.allocator, "short");
 
@@ -205,8 +205,8 @@ fn appendU32(list: *std.ArrayList(u8), allocator: std.mem.Allocator, v: u32) !vo
     try list.appendSlice(allocator, &b);
 }
 
-fn appendU64(list: *std.ArrayList(u8), allocator: std.mem.Allocator, v: u64) !void {
-    var b: [8]u8 = undefined;
-    std.mem.writeInt(u64, &b, v, .little);
+fn appendU1024(list: *std.ArrayList(u8), allocator: std.mem.Allocator, v: u1024) !void {
+    var b: [128]u8 = undefined;
+    std.mem.writeInt(u1024, &b, v, .little);
     try list.appendSlice(allocator, &b);
 }

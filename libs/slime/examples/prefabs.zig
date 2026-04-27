@@ -19,11 +19,8 @@ const Velocity = struct {
     }
 };
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.arena.allocator();
     const binary_blob = try slime.prefab.encodePrefabBinary(allocator, 1, &.{ Position, Velocity }, .{
         Position{ .x = 0, .y = 0 },
         Velocity{ .vx = 0.2, .vy = 0.05 },
@@ -33,8 +30,8 @@ pub fn main() !void {
     var world = slime.World.init(allocator);
     defer world.deinit();
 
-    var fbs_bin = std.io.fixedBufferStream(binary_blob);
-    var prefab_bin = try slime.prefab.readPrefabBinary(allocator, fbs_bin.reader());
+    var fbs_bin = std.Io.Reader.fixed(binary_blob);
+    var prefab_bin = try slime.prefab.readPrefabBinary(allocator, &fbs_bin);
     defer prefab_bin.deinit(allocator);
 
     _ = try world.spawnPrefab(prefab_bin.asRef());

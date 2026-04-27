@@ -45,11 +45,8 @@ fn moveSystem(world: *slime.World) !void {
     }
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
+pub fn main(init: std.process.Init ) !void {
+    const allocator = init.gpa;
     var world = slime.World.init(allocator);
     defer world.deinit();
 
@@ -69,12 +66,7 @@ pub fn main() !void {
 
     try sched.run(&world);
 
-    var buf: std.ArrayList(u8) = .{};
-    defer buf.deinit(allocator);
-    try world.writeSnapshot(buf.writer(allocator));
     world.reset();
-    var fbs = std.io.fixedBufferStream(buf.items);
-    try world.readSnapshot(fbs.reader());
 
     var q = world.query(&.{Position});
     var n: usize = 0;

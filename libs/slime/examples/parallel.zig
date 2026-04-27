@@ -18,10 +18,8 @@ fn incV(world: *slime.World) !void {
     }
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
     var world = slime.World.init(allocator);
     defer world.deinit();
@@ -39,11 +37,7 @@ pub fn main() !void {
     try sched.addWithMasks(&.{P}, &.{P}, incP);
     try sched.addWithMasks(&.{V}, &.{V}, incV);
 
-    var pool: std.Thread.Pool = undefined;
-    try pool.init(.{ .allocator = allocator, .n_jobs = 4 });
-    defer pool.deinit();
-
-    try sched.runParallel(&world, &pool);
+    try sched.runParallel(&world, init.io);
 
     var sum_p: f32 = 0;
     var sum_v: f32 = 0;

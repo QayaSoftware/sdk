@@ -6,7 +6,7 @@ const registry = @import("registry.zig");
 pub const ArchetypeId = u32;
 
 pub const Archetype = struct {
-    signature: u64,
+    signature: u1024,
     id: ArchetypeId,
     entities: std.ArrayListUnmanaged(Entity),
     columns: std.AutoArrayHashMapUnmanaged(u32, Column),
@@ -26,7 +26,7 @@ pub const Archetype = struct {
         self: *Archetype,
         allocator: std.mem.Allocator,
         e: Entity,
-        sig: u64,
+        sig: u1024,
         comptime types: []const type,
         values: anytype,
     ) !usize {
@@ -62,7 +62,7 @@ pub const Archetype = struct {
         self: *Archetype,
         allocator: std.mem.Allocator,
         e: Entity,
-        sig: u64,
+        sig: u1024,
     ) !usize {
         std.debug.assert(self.signature == sig);
         const row = self.entities.items.len;
@@ -140,7 +140,7 @@ pub const Archetype = struct {
 pub fn create(
     allocator: std.mem.Allocator,
     id: ArchetypeId,
-    signature: u64,
+    signature: u1024,
 ) !Archetype {
     var arch: Archetype = .{
         .signature = signature,

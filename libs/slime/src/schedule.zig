@@ -3,8 +3,8 @@ const World = @import("world.zig").World;
 const registry = @import("registry.zig");
 
 pub const Masks = struct {
-    read_mask: u64,
-    write_mask: u64,
+    read_mask: u1024,
+    write_mask: u1024,
 };
 
 pub fn masksConflict(a: Masks, b: Masks) bool {
@@ -22,8 +22,8 @@ pub const Schedule = struct {
 
     const SystemEntry = struct {
         run: *const fn (*World) anyerror!void,
-        read_mask: u64,
-        write_mask: u64,
+        read_mask: u1024,
+        write_mask: u1024,
     };
 
     pub fn init(allocator: std.mem.Allocator) @This() {
@@ -74,7 +74,7 @@ pub const Schedule = struct {
         }
     }
 
-    pub fn runParallel(self: *@This(), world: *World, pool: *std.Thread.Pool) !void {
+    pub fn runParallel(self: *@This(), world: *World, io: std.Io) !void {
         const sys = self.systems.items;
         if (sys.len == 0) return;
 
@@ -90,8 +90,8 @@ pub const Schedule = struct {
         const batches = self.cached_batches.?;
 
         for (batches) |batch| {
-            var wg: std.Thread.WaitGroup = .{};
-            wg.reset();
+            var g: std.Io.Group = .init;
+            errdefer g.cancel(io);
 
             for (batch) |idx| {
                 const entry = sys[idx];
@@ -102,9 +102,11 @@ pub const Schedule = struct {
                         };
                     }
                 };
-                pool.spawnWg(&wg, Runner.call, .{ world, entry.run });
+                g.concurrent(io, Runner.call, .{ world, entry.run }) catch {
+                    Runner.call(world, entry.run); // Fallback to synchronous execution
+                };
             }
-            wg.wait();
+            try g.await(io);
         }
     }
 
@@ -114,30 +116,38 @@ pub const Schedule = struct {
 };
 
 fn computeBatchesFromMasks(allocator: std.mem.Allocator, masks: []const Masks) ![]const []const usize {
-    var batch_lists: std.ArrayList(std.ArrayList(usize)) = .{};
+    var batch_lists: std.ArrayListUnmanaged(std.ArrayListUnmanaged(usize)) = .empty;
     errdefer {
         for (batch_lists.items) |*b| b.deinit(allocator);
         batch_lists.deinit(allocator);
     }
 
-    systems_loop: for (masks, 0..) |sys, i| {
-        for (batch_lists.items) |*batch| {
-            var ok = true;
+    for (masks, 0..) |sys, i| {
+        var target_batch: usize = 0;
+        var b = batch_lists.items.len;
+        while (b > 0) {
+            b -= 1;
+            const batch = batch_lists.items[b];
+            var conflict = false;
             for (batch.items) |j| {
-                const other = masks[j];
-                if (masksConflict(sys, other)) {
-                    ok = false;
+                if (masksConflict(sys, masks[j])) {
+                    conflict = true;
                     break;
                 }
             }
-            if (ok) {
-                try batch.append(allocator, i);
-                continue :systems_loop;
+            if (conflict) {
+                target_batch = b + 1;
+                break;
             }
         }
-        var nb: std.ArrayList(usize) = .{};
-        try nb.append(allocator, i);
-        try batch_lists.append(allocator, nb);
+
+        if (target_batch == batch_lists.items.len) {
+            var nb: std.ArrayListUnmanaged(usize) = .empty;
+            try nb.append(allocator, i);
+            try batch_lists.append(allocator, nb);
+        } else {
+            try batch_lists.items[target_batch].append(allocator, i);
+        }
     }
 
     const out = try allocator.alloc([]const usize, batch_lists.items.len);
@@ -160,3 +170,55 @@ fn freeBatches(allocator: std.mem.Allocator, batches: []const []const usize) voi
     for (batches) |b| allocator.free(b);
     allocator.free(batches);
 }
+
+pub const Stage = enum {
+    init,
+    input,
+    update,
+    render,
+    deinit,
+};
+
+pub const Scheduler = struct {
+    allocator: std.mem.Allocator,
+    stages: std.EnumArray(Stage, Schedule),
+
+    pub fn init(allocator: std.mem.Allocator) !@This() {
+        var self: @This() = .{
+            .allocator = allocator,
+            .stages = std.EnumArray(Stage, Schedule).initUndefined(),
+        };
+        for (std.enums.values(Stage)) |stage| {
+            self.stages.set(stage, Schedule.init(allocator));
+        }
+        return self;
+    }
+
+    pub fn deinit(self: *@This()) void {
+        for (std.enums.values(Stage)) |stage| {
+            self.stages.getPtr(stage).deinit();
+        }
+    }
+
+    pub fn add(self: *@This(), stage: Stage, comptime write: []const type, comptime f: *const fn (*World) anyerror!void) !void {
+        try self.stages.getPtr(stage).add(write, f);
+    }
+
+    pub fn addWithMasks(
+        self: *@This(),
+        stage: Stage,
+        comptime read: []const type,
+        comptime write: []const type,
+        comptime f: *const fn (*World) anyerror!void,
+    ) !void {
+        try self.stages.getPtr(stage).addWithMasks(read, write, f);
+    }
+
+    pub fn run(self: *@This(), stage: Stage, world: *World) !void {
+        try self.stages.getPtr(stage).run(world);
+    }
+
+    pub fn runParallel(self: *@This(), stage: Stage, world: *World, io: std.Io) !void {
+        try self.stages.getPtr(stage).runParallel(world, io);
+    }
+};
