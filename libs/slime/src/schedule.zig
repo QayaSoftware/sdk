@@ -26,6 +26,12 @@ pub const Schedule = struct {
         write_mask: u1024,
     };
 
+    pub fn reset(self: *@This()) void {
+        self.systems.clearAndFree(self.allocator);
+        self.cached_masks = null;
+        self.cached_batches = null;
+    }
+
     pub fn init(allocator: std.mem.Allocator) @This() {
         return .{
             .allocator = allocator,

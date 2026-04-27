@@ -3,6 +3,7 @@
 const std = @import("std");
 const typeIdInt = @import("util/type_id.zig").typeIdInt;
 const ResourcePool = @This();
+const options = @import("options");
 
 const ResourceEntry = struct {
     ptr: *anyopaque,
@@ -13,6 +14,16 @@ allocator: std.mem.Allocator,
 map: std.AutoHashMapUnmanaged(usize, ResourceEntry),
 locked: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
+
+
+/// Resets the entire pool. UNSAFE: 
+pub fn reset(self: *ResourcePool) void {
+    self.lock();
+    defer self.unlock();
+    self.map.clearAndFree(self.allocator);
+    
+}
+
 pub fn init(self: *ResourcePool, allocator: std.mem.Allocator) void {
     self.* = .{
         .allocator = allocator,
@@ -21,6 +32,9 @@ pub fn init(self: *ResourcePool, allocator: std.mem.Allocator) void {
 }
 
 pub fn lock(self: *ResourcePool) void {
+    if (!options.thread_safe) {
+        return;
+    }
     while (true) {
         if ((self.locked.cmpxchgWeak(false, true, .acquire, .acquire) orelse false)) {
             break;
@@ -30,6 +44,9 @@ pub fn lock(self: *ResourcePool) void {
 }
 
 pub fn unlock(self: *ResourcePool) void {
+    if (!options.thread_safe) {
+        return;
+    }
     self.locked.store(false, .release);
 }
 

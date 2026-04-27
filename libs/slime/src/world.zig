@@ -423,6 +423,14 @@ pub const World = struct {
         self.free_slots.clearRetainingCapacity();
     }
 
+    pub fn resetEntities(self: *Self) void {
+        for (self.archetypes.items) |*a| a.deinit(self.allocator);
+        self.archetypes.clearRetainingCapacity();
+        self.archetype_by_sig.clearRetainingCapacity();
+        self.entities.clearRetainingCapacity();
+        self.free_slots.clearRetainingCapacity();
+    }
+
     pub fn spawnPrefab(self: *Self, prefab: prefab_mod.PrefabRef) !Entity {
         self.lock();
         defer self.unlock();
