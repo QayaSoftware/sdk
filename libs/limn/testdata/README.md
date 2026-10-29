@@ -1,8 +1,7 @@
 # Test data
 
 What the unit tests and `zig build checks` read. These are plain files, not
-Git LFS, and are left out of the package's `.paths`, so projects that depend
-on limn never fetch them.
+Git LFS, and are left out of limn's `.paths`.
 
 `world/Fox.glb` comes from the Khronos Group glTF Sample Assets repository:
 

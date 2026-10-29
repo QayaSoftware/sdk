@@ -1,9 +1,8 @@
 const std = @import("std");
 
-/// The SDK's libraries. Each is a package of its own under libs/, which can
-/// also be depended on alone through its read-only mirror. Each is on by
-/// default and re-exported under its name; `-D<name>=false` turns one off,
-/// and then it is never fetched.
+/// The SDK's libraries, each a package of its own under libs/. Each is on
+/// by default and re-exported under its name; `-D<name>=false` turns one
+/// off, and then it is never fetched.
 const libraries = [_][]const u8{ "limn", "slime" };
 
 pub fn build(b: *std.Build) void {

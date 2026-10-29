@@ -3,8 +3,7 @@
 A high quality, performant, realtime, concurrency-first, physically based renderer written in zig with Vulkan 1.3
 
 Part of the [Qaya SDK](https://github.com/QayaSoftware/sdk), where it is developed under
-`libs/limn`. [Tofaa2/limn](https://github.com/Tofaa2/limn) is a read-only mirror of it: open
-issues and pull requests in the SDK.
+`libs/limn`.
 
 Latest docs are published to https://qayasoftware.github.io/sdk/limn/
 
@@ -85,20 +84,23 @@ zig build cross      # every desktop target and Android, into zig-out/cross
 
 ## Using it
 
+limn comes with the Qaya SDK:
+
 ```sh
-zig fetch --save git+https://github.com/Tofaa2/limn
+zig fetch --save git+https://github.com/QayaSoftware/sdk
 ```
 
 ```zig
-const limn = b.dependency("limn", .{ .target = target, .optimize = optimize });
-exe.root_module.addImport("limn", limn.module("limn"));
+const qaya = b.dependency("qaya", .{ .target = target, .optimize = optimize });
+exe.root_module.addImport("limn", qaya.module("limn"));
 ```
 
 limn's `build.zig` also gives an application's build what limn's own uses:
 `addShaders` compiles its Slang shaders, which can include limn's, into SPIR-V
 for `@embedFile`, and `applyAndroidLibc` builds it for Android with the
-fetched NDK. [limn-examples](https://github.com/QayaSoftware/limn-examples)
-uses both, and packs Android builds into APKs.
+fetched NDK; the SDK's README shows how to reach them.
+[limn-examples](https://github.com/QayaSoftware/limn-examples) uses both, and
+packs Android builds into APKs.
 
 ## Documentation
 

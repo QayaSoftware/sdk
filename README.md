@@ -3,16 +3,14 @@
 Libraries for making games and applications in Zig. Each one is small, takes
 on as few dependencies as it can, and can be used without the rest.
 
-| Library                   | What it is                                                     | Mirror                                            |
-| ------------------------- | -------------------------------------------------------------- | ------------------------------------------------- |
-| [`limn`](libs/limn)       | Physically based realtime renderer on Vulkan 1.3               | [Tofaa2/limn](https://github.com/Tofaa2/limn)     |
-| [`slime`](libs/slime)     | Entity component system with prefabs and parallel scheduling   | [Tofaa2/slime](https://github.com/Tofaa2/slime)   |
+| Library               | What it is                                                   |
+| --------------------- | ------------------------------------------------------------ |
+| [`limn`](libs/limn)   | Physically based realtime renderer on Vulkan 1.3             |
+| [`slime`](libs/slime) | Entity component system with prefabs and parallel scheduling |
 
 Examples for limn are in [QayaSoftware/limn-examples](https://github.com/QayaSoftware/limn-examples).
 
 ## Using it
-
-All of the SDK, as one package:
 
 ```sh
 zig fetch --save git+https://github.com/QayaSoftware/sdk
@@ -27,10 +25,20 @@ exe.root_module.addImport("slime", qaya.module("slime"));
 Every library is on by default. Turn off the ones you do not use, and their
 dependencies are never fetched: `b.dependency("qaya", .{ .limn = false })`.
 
-Or one library alone, from its mirror:
+A library's own build functions, such as limn's `addShaders`, come from its
+`build.zig` through the SDK's, with the library built from your build's
+options:
 
-```sh
-zig fetch --save git+https://github.com/Tofaa2/slime
+```zig
+const qaya_build = @import("qaya");
+
+pub fn build(b: *std.Build) void {
+    const limn_build = b.lazyImport(qaya_build, "limn") orelse return;
+    const qaya = b.dependency("qaya", .{ .limn = false, .slime = false });
+    const limn = qaya.builder.lazyDependency("limn", .{ .target = target, .optimize = optimize }) orelse return;
+    exe.root_module.addImport("limn", limn.module("limn"));
+    limn_build.addShaders(b, limn, exe.root_module, &.{ ... });
+}
 ```
 
 ## Layout
@@ -43,15 +51,6 @@ cd libs/limn && zig build test
 ```
 
 From the root, `zig build test` and `zig build check` run every library's.
-
-## Mirrors
-
-Development happens here. Every push to `master` splits each `libs/<name>`
-out with `git subtree split` and pushes it to that library's mirror, which
-is read-only: open issues and pull requests here.
-
-A tag `<name>-v<version>`, such as `limn-v0.1.5`, is pushed to the mirror as
-`v<version>`.
 
 ## License
 

@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Changed
-- Developed in the Qaya SDK, github.com/QayaSoftware/sdk, under `libs/limn`; github.com/Tofaa2/limn is a read-only mirror of it.
+- Developed in the Qaya SDK, github.com/QayaSoftware/sdk, under `libs/limn`, and depended on through the SDK's package.
 - The examples and their assets moved to github.com/QayaSoftware/limn-examples. The build no longer fetches GLFW, its platform headers, the macOS SDK headers or MoltenVK, and cloning no longer needs Git LFS.
 - The test model, panel and fonts are in `testdata/`, outside the package's `.paths`.
 
