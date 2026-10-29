@@ -1,0 +1,17 @@
+.{
+    .name = .slime,
+    .version = "0.0.0",
+    .fingerprint = 0xa32d552b38031f13, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        //},
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "examples",
+        "LICENSE",
+        "README.md",
+    },
+}
