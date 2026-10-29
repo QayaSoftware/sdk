@@ -28,7 +28,7 @@ Path tracing is WIP and contains noise, unfortunately RTX is an oversold concept
 |  ![asteroids](../../.github/images/asteroids.png)  |      ![voxels](../../.github/images/voxels.png)      |    ![bistro](../../.github/images/bistro.png)    |
 |                **asteroids**                 |                   **voxels**                   |                 **bistro**                 |
 
-Every picture is an example in `examples/`: run it with `zig build <name>`.
+Every picture is an example in [limn-examples](https://github.com/QayaSoftware/limn-examples): run it there with `zig build <name>`.
 
 ```zig
 const gfx = @import("limn");
@@ -65,29 +65,21 @@ while (running) {
 ## Build
 
 Requires Zig 0.16 and a Vulkan 1.3 driver. Everything else is fetched by
-the build: Slang, glslang, GLFW and its platform headers, the macOS SDK
-headers, MoltenVK and the Android NDK, so `-Dtarget` cross-compiles from
-any host (`-Dsystem_tools` uses `slangc` and `glslangValidator` from PATH
-instead). The example assets are stored with Git LFS: run
-`git lfs install` before cloning, or `git lfs pull` afterwards.
+the build: Slang, glslang and the Android NDK, so `-Dtarget` cross-compiles
+from any host (`-Dsystem_tools` uses `slangc` and `glslangValidator` from PATH
+instead).
 
 ```sh
-zig build            # library and examples
-zig build run        # the meadow example
+zig build            # library
 zig build test       # unit tests
-zig build checks     # picking, reloading, streaming and out of memory, without a window
-zig build verify     # formatting, tests, and the examples under Vulkan validation
+zig build checks     # picking, reloading and out of memory, without a window
+zig build verify     # formatting, tests and checks
 zig build docs       # API reference in zig-out/docs
 zig build cross      # every desktop target and Android, into zig-out/cross
 ```
 
-For `-Dtarget=aarch64-linux-android` each example becomes an APK in
-`zig-out/apk`, signed with a fixed debug key: `adb install` it. macOS
-builds put `libMoltenVK.dylib` beside the examples.
-
-Add `-Doptimize=ReleaseFast` for full speed. Every example takes `--frames N`
-and `--screenshot file.png`, and lists its keys at the top of its source
-file.
+Building and running the examples, including as Android APKs, is covered in
+[limn-examples](https://github.com/QayaSoftware/limn-examples).
 
 ## Documentation
 
@@ -114,6 +106,6 @@ Apache-2.0; see [`LICENSE`](LICENSE). Bundled work keeps its own terms:
 - FidelityFX SDK 1.1.4, for Super Resolution 2 and 3 (MIT): `src/third_party/ffx_sdk`
 - Linearly transformed cosine tables (BSD-style, Heitz et al. 2016): `src/third_party/ltc`
 - DejaVu Sans, the built-in font: `src/render/fonts/LICENSE`
-- Example models, environments and fonts, some for non-commercial use only: `examples/assets/README.md`
+- Example models, environments and fonts, some for non-commercial use only: [limn-examples](https://github.com/QayaSoftware/limn-examples/blob/master/examples/assets/README.md)
 
 Not bundled, but built in whenever `dlss_sdk/` or `nrd_sdk/` is present (`zig build dlss-sdk`, `zig build nrd-sdk`): NVIDIA DLSS and NRD, under the NVIDIA RTX SDKs license. Build with `-Ddlss=false -Dnrd=false` to leave them out.

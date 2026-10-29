@@ -394,7 +394,7 @@ pub fn build(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
     run_checks.has_side_effects = true;
     if (b.args) |args| run_checks.addArgs(args);
     if (thread_sanitizer) run_checks.setEnvironmentVariable("TSAN_OPTIONS", b.fmt("suppressions={s}", .{b.pathFromRoot(root ++ "/src/tsan.supp")}));
-    b.step("checks", "Check picking, shader reloading, streaming and running out of memory, without a window").dependOn(&run_checks.step);
+    b.step("checks", "Check picking, shader reloading and running out of memory, without a window").dependOn(&run_checks.step);
     verify_step.dependOn(&run_checks.step);
     const costs_module = b.createModule(.{
         .root_source_file = b.path(root ++ "/src/costs.zig"),
