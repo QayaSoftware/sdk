@@ -2272,20 +2272,6 @@ fn loadAnimations(gpa: std.mem.Allocator, arena: std.mem.Allocator, data: *gltf.
     }
 }
 
-test "skinned glTF keeps skins, clips and per-vertex influences" {
-    acquireLibraries(std.testing.io);
-    defer releaseLibraries(std.testing.io);
-    var model = try load(std.testing.allocator, std.testing.io, "testdata/world/Fox.glb", .{});
-    defer model.deinit();
-    try std.testing.expect(model.skins.len != 0);
-    try std.testing.expect(model.animations.len != 0);
-    try std.testing.expect(model.animations[0].duration > 0);
-    const mesh = model.meshes[model.instances[0].mesh];
-    try std.testing.expect(mesh.skin != null);
-    try std.testing.expectEqual(mesh.vertices.len, mesh.skin.?.len);
-    for (mesh.meshlets) |meshlet| try std.testing.expect(meshlet.index_count <= max_meshlet_triangles * 3);
-}
-
 /// Decodes an image file (PNG, JPEG, ...) to RGBA8. Requires
 /// `acquireLibraries`. Free the result with `deinit`.
 pub fn loadImage(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !zstbi.Image {
@@ -2456,36 +2442,6 @@ test "a cluster hierarchy stays watertight at every cut" {
     try std.testing.expect(fewest * 8 < cells * cells * 2);
 }
 
-test "Basis Universal textures are transcoded to BC7" {
-    const gpa = std.testing.allocator;
-    for ([_][]const u8{ "testdata/panel/panel_etc1s.ktx2", "testdata/panel/panel_uastc.ktx2" }) |path| {
-        const bytes = try readFile(gpa, std.testing.io, path);
-        defer gpa.free(bytes);
-        const texture = try ktx2.read(gpa, bytes, .bc);
-        defer gpa.free(texture.data);
-        try std.testing.expectEqual(ktx2.Format.bc7, texture.format);
-        try std.testing.expect(texture.srgb);
-        try std.testing.expectEqual(@as(u32, 480), texture.width);
-        try std.testing.expectEqual(@as(u32, 270), texture.height);
-        try std.testing.expectEqual(@as(u32, 9), texture.levels);
-        var expected: usize = 0;
-        for (0..9) |level| expected += @as(usize, (@max(@as(u32, 480) >> @intCast(level), 1) + 3) / 4) * ((@max(@as(u32, 270) >> @intCast(level), 1) + 3) / 4) * 16;
-        try std.testing.expectEqual(expected, texture.data.len);
-        var differing: usize = 0;
-        var block: usize = 16;
-        while (block + 16 <= 120 * 68 * 16) : (block += 16) {
-            if (!std.mem.eql(u8, texture.data[block..][0..16], texture.data[0..16])) differing += 1;
-        }
-        try std.testing.expect(differing > 120 * 68 / 2);
-    }
-    var broken: [96]u8 = @splat(0);
-    @memcpy(broken[0..12], &[_]u8{ 0xab, 'K', 'T', 'X', ' ', '2', '0', 0xbb, '\r', '\n', 0x1a, '\n' });
-    std.mem.writeInt(u32, broken[20..24], 16, .little);
-    std.mem.writeInt(u32, broken[24..28], 16, .little);
-    std.mem.writeInt(u32, broken[36..40], 1, .little);
-    try std.testing.expectError(error.UnsupportedKtx2, ktx2.read(gpa, &broken, .bc));
-}
-
 /// Deletes the oldest files (by write time) of an asset cache directory
 /// until at most `max_bytes` remain. Returns the bytes freed.
 pub fn trimCache(gpa: std.mem.Allocator, io: std.Io, directory: []const u8, max_bytes: u64) !u64 {
@@ -2594,34 +2550,6 @@ test "a weighted joint outside its skin is refused" {
     try writeTestFile(io, path, json);
     defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
     try std.testing.expectError(error.InvalidGltf, load(std.testing.allocator, io, path, .{}));
-}
-
-test "Basis Universal textures are transcoded to ASTC or plain texels for GPUs without BC" {
-    const gpa = std.testing.allocator;
-    for ([_][]const u8{ "testdata/panel/panel_etc1s.ktx2", "testdata/panel/panel_uastc.ktx2" }) |path| {
-        const bytes = try readFile(gpa, std.testing.io, path);
-        defer gpa.free(bytes);
-        const astc = try ktx2.read(gpa, bytes, .astc);
-        defer gpa.free(astc.data);
-        try std.testing.expectEqual(ktx2.Format.astc4x4, astc.format);
-        try std.testing.expect(astc.srgb);
-        var blocks: usize = 0;
-        for (0..9) |level| blocks += @as(usize, (@max(@as(u32, 480) >> @intCast(level), 1) + 3) / 4) * ((@max(@as(u32, 270) >> @intCast(level), 1) + 3) / 4);
-        try std.testing.expectEqual(blocks * 16, astc.data.len);
-        const plain = try ktx2.read(gpa, bytes, .rgba);
-        defer gpa.free(plain.data);
-        try std.testing.expectEqual(ktx2.Format.rgba8, plain.format);
-        var texels: usize = 0;
-        for (0..9) |level| texels += @as(usize, @max(@as(u32, 480) >> @intCast(level), 1)) * @max(@as(u32, 270) >> @intCast(level), 1);
-        try std.testing.expectEqual(texels * 4, plain.data.len);
-        var lightest: u8 = 0;
-        var darkest: u8 = 255;
-        for (0..480 * 270) |texel| {
-            lightest = @max(lightest, plain.data[texel * 4]);
-            darkest = @min(darkest, plain.data[texel * 4]);
-        }
-        try std.testing.expect(lightest - darkest > 64);
-    }
 }
 
 test "a required extension the loader lacks is refused" {

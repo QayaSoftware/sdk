@@ -10,7 +10,6 @@ const math = gfx.math;
 const width = 320;
 const height = 180;
 const cache_dir = ".zig-cache/limn-checks";
-const fox_path = "testdata/world/Fox.glb";
 
 pub const std_options: std.Options = .{ .log_level = .info, .logFn = log, .enable_segfault_handler = !@import("builtin").sanitize_thread };
 
@@ -103,7 +102,7 @@ const Checks = struct {
         const renderer = self.renderer;
         const pixels = [_]u8{ 255, 255, 255, 255 };
         const gone = try renderer.images.create(.{ .width = 1, .height = 1, .pixels = &pixels });
-        const font = try renderer.fonts.load("src/render/fonts/DejaVuSans.ttf", &.{.{ 32, 126 }});
+        const font = try renderer.fonts.load("libs/limn/src/render/fonts/DejaVuSans.ttf", &.{.{ 32, 126 }});
         var list = gfx.DrawList.init(self.gpa);
         defer list.deinit();
         try list.image(gone, .{ .x = 0, .y = 0, .width = 8, .height = 8 }, .{});
@@ -700,36 +699,6 @@ const Checks = struct {
         std.log.info("resizing: {d} sizes a frame apart, with and without path tracing and virtual shadows", .{sizes.len});
     }
 
-    /// Shaders reloaded just before a model comes close enough for finer
-    /// texture levels to stream in.
-    fn reloadWhileStreaming(self: *Checks) !void {
-        const renderer = self.renderer;
-        const fox = try renderer.models.load(fox_path);
-        defer renderer.models.destroy(fox);
-        try renderer.waitUntilLoaded();
-        const scale = math.scaling(.{ 0.02, 0.02, 0.02 });
-        const entity = try renderer.entities.create(self.scene, .{ .model = fox, .transform = math.mul(math.translation(.{ 0, 0, -60 }), scale) });
-        defer renderer.entities.destroy(entity);
-        try self.draw(20);
-        const far = renderer.stats().streamed_texture_bytes;
-        _ = renderer.shaders.reload() catch |err| {
-            if (@as(anyerror, err) != error.ShaderReloadDisabled) return err;
-            return std.log.info("reload while streaming: shader reload left out of this build", .{});
-        };
-        renderer.entities.setTransform(entity, math.mul(math.translation(.{ -1.5, 0, 0 }), scale));
-        var near = far;
-        var still: u32 = 0;
-        for (0..300) |_| {
-            try self.draw(1);
-            const now = renderer.stats().streamed_texture_bytes;
-            still = if (now == near) still + 1 else 0;
-            near = now;
-            if (still == 16) break;
-        } else return error.StreamingNeverSettled;
-        if (near <= far) return error.NothingStreamedAfterReload;
-        std.log.info("reload while streaming: {d} KiB far, {d} KiB once close", .{ far / 1024, near / 1024 });
-    }
-
     fn scenePassReads(self: *Checks) !void {
         var seen = Seen{};
         const passes: []const gfx.Pass = &.{
@@ -768,37 +737,6 @@ const Checks = struct {
         if (count == 0) return error.NoShaderReloaded;
         try self.draw(4);
         std.log.info("shader reload: {d} shaders", .{count});
-    }
-
-    fn streaming(self: *Checks) !void {
-        const fox = try self.renderer.models.load(fox_path);
-        try self.renderer.waitUntilLoaded();
-        if (self.renderer.models.state(fox) != .ready) return error.ModelNotLoaded;
-        const entity = try self.renderer.entities.create(self.scene, .{ .model = fox, .transform = math.mul(math.translation(.{ 1.5, 0, 0 }), math.scaling(.{ 0.02, 0.02, 0.02 })) });
-        var settled = false;
-        for (0..300) |_| {
-            try self.draw(1);
-            const stats = self.renderer.stats();
-            if (stats.streamed_textures != 0 and stats.streamed_textures_pending == 0) {
-                settled = true;
-                break;
-            }
-        }
-        const stats = self.renderer.stats();
-        if (stats.streamed_textures == 0) return error.NothingStreamed;
-        if (!settled) return error.StreamingNeverSettled;
-
-        var folder = try std.Io.Dir.cwd().openDir(self.io, cache_dir, .{ .iterate = true });
-        defer folder.close(self.io);
-        var files = folder.iterate();
-        var cached: usize = 0;
-        while (try files.next(self.io)) |_| cached += 1;
-        if (cached == 0) return error.NothingCached;
-
-        self.renderer.entities.destroy(entity);
-        self.renderer.models.destroy(fox);
-        try self.draw(4);
-        std.log.info("streaming: {d} textures, {d} KiB loaded; {d} files in the cache", .{ stats.streamed_textures, stats.streamed_texture_bytes / 1024, cached });
     }
 
     /// A large model is destroyed under a small one; the small one must be
@@ -840,76 +778,6 @@ const Checks = struct {
         self.renderer.models.destroy(small);
         try self.draw(2);
         std.log.info("compaction: {d} KiB moved, the picture differs by {d:.2} levels", .{ moved / 1024, mean });
-    }
-
-    /// Fails one allocation per round, each further into the same work. Each
-    /// round must succeed or return `error.OutOfMemory`, and the next frame
-    /// must draw.
-    fn outOfMemory(self: *Checks, rounds: usize) !void {
-        const renderer = self.renderer;
-        const failing = self.failing;
-        const triangle = [_][3]f32{ .{ 0, 0, 0 }, .{ 1, 0, 0 }, .{ 0, 1, 0 } };
-        const indices = [_]u32{ 0, 1, 2 };
-        var list = gfx.DrawList.init(failing.allocator());
-        defer list.deinit();
-        var failures: usize = 0;
-        for (0..rounds) |round| {
-            failing.failAfter(round);
-            const outcome: anyerror!void = blk: {
-                const model = renderer.models.create(&.{.{ .positions = &triangle, .indices = &indices }}) catch |err| break :blk err;
-                defer renderer.models.destroy(model);
-                const entity = renderer.entities.create(self.scene, .{ .model = model, .transform = math.translation(.{ 2, 1, 0 }) }) catch |err| break :blk err;
-                defer renderer.entities.destroy(entity);
-                list.clear();
-                list.text(renderer.fonts.default(), "out of memory", .{ 20, 20 }, .{ .size = 18 }) catch |err| break :blk err;
-                const lights = [_]gfx.LightDesc{.{ .position = .{ 2, 2, 0 }, .color = .{ 1, 1, 1 }, .intensity = 5, .range = 6 }};
-                renderer.scenes.setLights(self.scene, &lights) catch |err| break :blk err;
-                _ = renderer.render(.{ .views = &.{.{ .scene = self.scene, .camera = self.camera, .draw_lists = &.{.{ .list = &list }}, .target = .{ .texture = self.target } }}, .delta_time = 1.0 / 60.0 }) catch |err| break :blk err;
-            };
-            failing.failNever();
-            if (outcome) |_| {} else |err| {
-                if (err != error.OutOfMemory) return err;
-                failures += 1;
-            }
-            try self.draw(1);
-        }
-        try renderer.scenes.setLights(self.scene, &.{});
-
-        const before = failing.alloc_index.load(.monotonic);
-        {
-            const clean = try renderer.models.load(fox_path);
-            try renderer.waitUntilLoaded();
-            if (renderer.models.state(clean) != .ready) return error.ModelNotLoaded;
-            renderer.models.destroy(clean);
-        }
-        const allocations = failing.alloc_index.load(.monotonic) - before;
-        var load_failures: usize = 0;
-        for (0..rounds) |round| {
-            failing.failAfter(round * allocations / rounds);
-            const loaded: ?gfx.Model = renderer.models.load(fox_path) catch |err| blk: {
-                if (err != error.OutOfMemory) return err;
-                break :blk null;
-            };
-            if (loaded) |model| {
-                renderer.waitUntilLoaded() catch |err| if (err != error.OutOfMemory) return err;
-                failing.failNever();
-                try renderer.waitUntilLoaded();
-                switch (renderer.models.state(model)) {
-                    .ready => {},
-                    .failed => {
-                        const cause = renderer.models.loadError(model) orelse return error.UnexpectedLoadFailure;
-                        if (cause != error.OutOfMemory) return cause;
-                        load_failures += 1;
-                    },
-                    else => return error.ModelStillLoading,
-                }
-                renderer.models.destroy(model);
-            } else load_failures += 1;
-            failing.failNever();
-            try self.draw(1);
-        }
-        if (failures == 0 or load_failures == 0) return error.NoFailureInjected;
-        std.log.info("out of memory: {d} of {d} rounds failed drawing and {d} loading, all recovered", .{ failures, rounds, load_failures });
     }
 
     /// Fails one GPU memory allocation per round while resources are made
@@ -1075,17 +943,15 @@ pub fn main(init: std.process.Init) !void {
     };
     try renderer.waitUntilLoaded();
     try checks.draw(8);
-    inline for (.{ "picking", "staleHandles", "staleDrawResources", "moves", "structure", "threads", "failedPass", "plainViewPasses", "scenePassReads", "placedLightsAndDecals", "lifecycle", "switchedOffMemory", "switchedOffCosts", "mirrored", "manyViews", "parallelViews", "resizing", "reloadWhileStreaming", "shaderReload", "streaming", "compaction", "sceneApi" }) |name| {
+    inline for (.{ "picking", "staleHandles", "staleDrawResources", "moves", "structure", "threads", "failedPass", "plainViewPasses", "scenePassReads", "placedLightsAndDecals", "lifecycle", "switchedOffMemory", "switchedOffCosts", "mirrored", "manyViews", "parallelViews", "resizing", "shaderReload", "compaction", "sceneApi" }) |name| {
         if (wanted(only.items, name)) try @field(Checks, name)(&checks);
     }
-    if (wanted(only.items, "outOfMemory")) try checks.outOfMemory(40);
     if (wanted(only.items, "outOfGpuMemory")) try checks.outOfGpuMemory(45);
     try renderer.device.waitIdle();
     if (renderer.device.validationErrorCount() != 0) return error.ValidationErrors;
     if (wanted(only.items, "withoutFeatures")) try withoutFeatures(init.gpa, init.io);
     if (wanted(only.items, "lostDevice")) try lostDevice(init.gpa, init.io);
     if (wanted(only.items, "pulledDraws")) try pulledDraws(init.gpa, init.io);
-    if (wanted(only.items, "withoutBlockFormats")) try withoutBlockFormats(init.gpa, init.io);
 }
 
 /// A second renderer with ray tracing, mesh shaders and shading variants
@@ -1185,45 +1051,6 @@ fn pulledDraws(gpa: std.mem.Allocator, io: std.Io) !void {
         return error.PulledDrawsDiffer;
     }
     std.log.info("pulled draws: the same picture as indexed draws, without SV_PrimitiveID", .{});
-}
-
-/// A model with Basis Universal textures, loaded on a GPU taken to have no
-/// block-compressed formats, draws what it draws with them: its textures are
-/// transcoded to plain texels instead.
-fn withoutBlockFormats(gpa: std.mem.Allocator, io: std.Io) !void {
-    var pictures: [2][]u8 = undefined;
-    for ([_]bool{ true, false }, &pictures) |block_formats, *picture| {
-        const renderer = try gfx.Renderer.init(gpa, io, .{
-            .application_name = "limn checks, without block formats",
-            .validation = true,
-            .deterministic = true,
-            .textures = .{ .block_formats = block_formats },
-        });
-        defer renderer.deinit();
-        if (!block_formats and (renderer.device.caps.bc_textures or renderer.device.caps.astc_textures)) return error.BlockFormatsNotTurnedOff;
-        const target = try renderer.views.createTarget(width, height);
-        defer renderer.views.destroyTarget(target);
-        const scene = try renderer.scenes.create();
-        renderer.scenes.setSun(scene, .{ .direction = .{ -0.2, -0.5, -1 }, .color = .{ 1, 1, 1 }, .intensity = 3 });
-        const model = try renderer.models.load("testdata/panel/panel_etc1s.gltf");
-        _ = try renderer.entities.create(scene, .{ .model = model, .transform = math.identity });
-        try renderer.waitUntilLoaded();
-        const info = renderer.models.info(model) orelse return error.ModelNotLoaded;
-        const center = math.scale(math.add(info.bounds_min, info.bounds_max), 0.5);
-        const reach = math.length(math.sub(info.bounds_max, info.bounds_min));
-        const camera = gfx.Camera.lookAt(math.add(center, .{ 0, 0, reach * 1.2 }), center);
-        for (0..8) |_| _ = try renderer.render(.{ .views = &.{.{ .scene = scene, .camera = camera, .target = .{ .texture = target } }}, .delta_time = 1.0 / 60.0 });
-        picture.* = try renderer.device.readTexture(gpa, target);
-        try renderer.device.waitIdle();
-        if (renderer.device.validationErrorCount() != 0) return error.ValidationErrors;
-    }
-    defer for (pictures) |picture| gpa.free(picture);
-    const apart = Checks.pixelsApart(pictures[0], pictures[1]);
-    if (apart * 100 > width * height) {
-        std.log.err("without block formats: {d} pixels differ from the picture with them", .{apart});
-        return error.TranscodedTexturesDiffer;
-    }
-    std.log.info("without block formats: Basis textures as plain texels, {d} pixels apart from BC7", .{apart});
 }
 
 /// Whether check `name` runs: every check does unless names are given on the

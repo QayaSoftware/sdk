@@ -1,15 +1,16 @@
 const std = @import("std");
 
-pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+/// Where slime is in the SDK; the paths below are relative to the SDK.
+const root = "libs/slime";
 
-
+/// Adds slime to the SDK's build: its module, `slime`, its examples, and
+/// its tests under `test_step`.
+pub fn build(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, test_step: *std.Build.Step) void {
     const options = b.addOptions();
     options.addOption(bool, "thread_safe", false);
 
     const mod = b.addModule("slime", .{
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path(root ++ "/src/root.zig"),
         .target = target,
     });
     mod.addOptions("options", options);
@@ -20,7 +21,6 @@ pub fn build(b: *std.Build) void {
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
-    const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
 
     const example_imports: []const std.Build.Module.Import = &.{
@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
     };
 
     const basic_mod = b.createModule(.{
-        .root_source_file = b.path("examples/basic.zig"),
+        .root_source_file = b.path(root ++ "/examples/basic.zig"),
         .target = target,
         .optimize = optimize,
         .imports = example_imports,
@@ -41,12 +41,13 @@ pub fn build(b: *std.Build) void {
     example_step.dependOn(&run_basic.step);
 
     const prefabs_mod = b.createModule(.{
-        .root_source_file = b.path("examples/prefabs.zig"),
+        .root_source_file = b.path(root ++ "/examples/prefabs.zig"),
         .target = target,
         .optimize = optimize,
         .imports = example_imports,
     });
-    const prefabs_exe = b.addExecutable(.{
+    const prefabs_exe = b.addExecutable(
+        .{
             .name = "slime-example-prefabs",
             .use_llvm = true,
             .root_module = prefabs_mod,
@@ -59,12 +60,12 @@ pub fn build(b: *std.Build) void {
     example_prefabs_step.dependOn(&run_prefabs.step);
 
     const parallel_mod = b.createModule(.{
-        .root_source_file = b.path("examples/parallel.zig"),
+        .root_source_file = b.path(root ++ "/examples/parallel.zig"),
         .target = target,
         .optimize = optimize,
         .imports = example_imports,
     });
-    const parallel_exe = b.addExecutable(.{ .name = "slime-example-parallel", .use_llvm =true, .root_module = parallel_mod });
+    const parallel_exe = b.addExecutable(.{ .name = "slime-example-parallel", .use_llvm = true, .root_module = parallel_mod });
     b.installArtifact(parallel_exe);
     const run_parallel = b.addRunArtifact(parallel_exe);
     run_parallel.step.dependOn(b.getInstallStep());
@@ -77,13 +78,17 @@ pub fn build(b: *std.Build) void {
     examples_all.dependOn(&run_parallel.step);
 
     const perf_mod = b.createModule(.{
-        .root_source_file = b.path("examples/performance.zig"),
+        .root_source_file = b.path(root ++ "/examples/performance.zig"),
         .target = target,
         .optimize = optimize,
         .imports = example_imports,
         .link_libc = true, // For c_allocator
     });
-    const perf_exe = b.addExecutable(.{ .name = "slime-perf", .root_module = perf_mod, .use_llvm = true, });
+    const perf_exe = b.addExecutable(.{
+        .name = "slime-perf",
+        .root_module = perf_mod,
+        .use_llvm = true,
+    });
     b.installArtifact(perf_exe);
     const run_perf = b.addRunArtifact(perf_exe);
     run_perf.step.dependOn(b.getInstallStep());

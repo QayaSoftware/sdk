@@ -9,7 +9,10 @@ pub const Shader = manifest.Shader;
 /// same ones.
 const slang_arguments = [_][]const u8{ "-profile", "spirv_1_5", "-target", "spirv", "-fvk-use-scalar-layout", "-matrix-layout-column-major", "-O2", "-warnings-disable", "39001,41012,41035" };
 
-const shader_dir = "src/render/shaders";
+/// Where limn is in the SDK; the paths below are relative to the SDK.
+const root = "libs/limn";
+
+const shader_dir = root ++ "/src/render/shaders";
 
 /// What `zig build cross` builds the library for.
 const cross_targets = [_][]const u8{ "x86_64-linux-gnu", "aarch64-linux-gnu", "x86_64-windows-gnu", "x86_64-macos", "aarch64-macos", "aarch64-linux-android" };
@@ -140,13 +143,13 @@ const glslang_sources = [_][]const u8{
     "StandAlone/StandAlone.cpp",
 };
 
-pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+/// Adds limn to the SDK's build: its module, `limn`, its own steps, and its
+/// tests and compile checks under `test_step` and `check_step`.
+pub fn build(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, test_step: *std.Build.Step, check_step: *std.Build.Step) void {
     const thread_sanitizer = b.option(bool, "tsan", "Build with the thread sanitizer, with -Dtarget=x86_64-linux-gnu; NVIDIA drivers make threads it cannot see, so run `checks` on Mesa (VK_DRIVER_FILES=.../lvp_icd.x86_64.json)") orelse false;
     const android = target.result.abi.isAndroid();
     if (android and !useAndroidNdk(b, target)) return;
-    const vulkan_headers = b.dependency("vulkan_headers", .{});
+    const vulkan_headers = b.lazyDependency("vulkan_headers", .{}) orelse return;
     const vulkan_include = vulkan_headers.path("include");
     const vulkan = b.lazyDependency("vulkan", .{
         .registry = vulkan_headers.path("registry/vk.xml"),
@@ -193,20 +196,20 @@ pub fn build(b: *std.Build) void {
     b.step("nrd-sdk", "Fetch NVIDIA's NRD SDK into nrd_sdk, under NVIDIA's license, and build it (needs cmake, a C++ compiler and dxc); builds after it have NRD").dependOn(&build_nrd.step);
     features.addOption(bool, "validate_input", validate_input);
     const features_module = features.createModule();
-    const zmesh = b.dependency("zmesh", .{ .target = target, .optimize = asset_optimize });
-    const zstbi = b.dependency("zstbi", .{ .target = target, .optimize = asset_optimize });
+    const zmesh = b.lazyDependency("zmesh", .{ .target = target, .optimize = asset_optimize }) orelse return;
+    const zstbi = b.lazyDependency("zstbi", .{ .target = target, .optimize = asset_optimize }) orelse return;
 
     const shaders_step = b.step("shaders", "Compile all shaders to SPIR-V");
     b.addNamedLazyPath("shader_include", b.path(shader_dir));
 
     const renderer = b.addModule("limn", .{
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path(root ++ "/src/root.zig"),
         .target = target,
         .optimize = optimize,
         .sanitize_thread = thread_sanitizer,
     });
     renderer.addImport("vulkan", vulkan.module("vulkan-zig"));
-    const volk = b.dependency("volk", .{});
+    const volk = b.lazyDependency("volk", .{}) orelse return;
     renderer.addImport("volk", volkModule(b, target, optimize, vulkan_include, volk));
     renderer.addImport("zmesh", zmesh.module("root"));
     renderer.linkLibrary(zmesh.artifact("zmesh"));
@@ -216,7 +219,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{ .target = target, .optimize = asset_optimize, .link_libcpp = true }),
     });
     simplifier.root_module.addCSourceFile(.{
-        .file = b.path("src/third_party/meshoptimizer/simplifier.cpp"),
+        .file = b.path(root ++ "/src/third_party/meshoptimizer/simplifier.cpp"),
         .flags = &.{
             "-fno-exceptions",                                                     "-fno-rtti",
             "-Dmeshopt=rnd_meshopt",                                               "-Dmeshopt_Allocator=rnd_meshopt_Allocator",
@@ -237,19 +240,19 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{ .target = target, .optimize = asset_optimize, .link_libcpp = true }),
     });
     basis.root_module.addCSourceFiles(.{
-        .root = b.path("src/third_party/basisu"),
+        .root = b.path(root ++ "/src/third_party/basisu"),
         .files = &.{ "transcoder/basisu_transcoder.cpp", "rnd_basis.cpp" },
         .flags = &.{ "-DBASISD_SUPPORT_KTX2=1", "-DBASISD_SUPPORT_KTX2_ZSTD=1", "-fno-strict-aliasing", "-w" },
     });
     renderer.linkLibrary(basis);
     const texture_codec = b.createModule(.{
-        .root_source_file = b.path("src/asset/texture.zig"),
+        .root_source_file = b.path(root ++ "/src/asset/texture.zig"),
         .target = target,
         .optimize = parser_optimize,
     });
     renderer.addImport("texture_codec", texture_codec);
     const font_baker = b.createModule(.{
-        .root_source_file = b.path("src/font_baker.zig"),
+        .root_source_file = b.path(root ++ "/src/font_baker.zig"),
         .target = target,
         .optimize = parser_optimize,
     });
@@ -262,7 +265,7 @@ pub fn build(b: *std.Build) void {
     const spirv_readonly = b.addExecutable(.{
         .name = "spirv_readonly",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/render/core/spirv_readonly.zig"),
+            .root_source_file = b.path(root ++ "/src/render/core/spirv_readonly.zig"),
             .target = b.graph.host,
             .optimize = .ReleaseSafe,
         }),
@@ -270,7 +273,7 @@ pub fn build(b: *std.Build) void {
     const depfile = b.addExecutable(.{
         .name = "depfile",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/depfile.zig"),
+            .root_source_file = b.path(root ++ "/src/depfile.zig"),
             .target = b.graph.host,
             .optimize = .ReleaseSafe,
         }),
@@ -282,7 +285,7 @@ pub fn build(b: *std.Build) void {
         .include = b.path(shader_dir),
         .generated = generated_dir,
     };
-    compileShaders(b, renderer, manifest.renderer, shader_tools, shaders_step);
+    compileShaders(b, renderer, root, manifest.renderer, shader_tools, shaders_step);
     b.addNamedLazyPath("shader_generated", generated_dir);
     b.addNamedLazyPath("depfile", shader_tools.depfile);
     b.addNamedLazyPath("spirv_readonly", shader_tools.spirv_readonly);
@@ -300,7 +303,7 @@ pub fn build(b: *std.Build) void {
     var shader_read_only: [manifest.renderer.len]bool = undefined;
     for (manifest.renderer, 0..) |shader, index| {
         shader_names[index] = shader.name;
-        shader_sources[index] = if (shader_reload) b.pathFromRoot(shader.src) else "";
+        shader_sources[index] = if (shader_reload) b.pathFromRoot(b.pathJoin(&.{ root, shader.src })) else "";
         shader_defines[index] = "";
         shader_entries[index] = shader.entry;
         shader_stages[index] = shader.stage;
@@ -333,7 +336,7 @@ pub fn build(b: *std.Build) void {
     const docs_trim = b.addExecutable(.{
         .name = "docs_trim",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/docs_trim.zig"),
+            .root_source_file = b.path(root ++ "/src/docs_trim.zig"),
             .target = b.graph.host,
             .optimize = .ReleaseSafe,
         }),
@@ -349,31 +352,22 @@ pub fn build(b: *std.Build) void {
     }
     docs_step.dependOn(&b.addInstallFile(trimmed_sources, "docs/sources.tar").step);
 
-    const check_step = b.step("check", "Compile the renderer, its tests and its tools without running them");
     const tests = b.addTest(.{ .root_module = renderer, .use_llvm = true });
     check_step.dependOn(&tests.step);
+    test_step.dependOn(&b.addRunArtifact(tests).step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = texture_codec })).step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = font_baker })).step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = depfile.root_module })).step);
     const apk_packer = b.addExecutable(.{
         .name = "apk",
-        .root_module = b.createModule(.{ .root_source_file = b.path("src/apk.zig"), .target = b.graph.host, .optimize = .ReleaseSafe }),
+        .root_module = b.createModule(.{ .root_source_file = b.path(root ++ "/src/apk.zig"), .target = b.graph.host, .optimize = .ReleaseSafe }),
     });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = apk_packer.root_module })).step);
     b.addNamedLazyPath("apk", apk_packer.getEmittedBin());
-    const test_step = b.step("test", "Run unit tests");
-    for ([_]*std.Build.Step.Compile{
-        tests,
-        b.addTest(.{ .root_module = texture_codec }),
-        b.addTest(.{ .root_module = font_baker }),
-        b.addTest(.{ .root_module = depfile.root_module }),
-        b.addTest(.{ .root_module = apk_packer.root_module }),
-    }) |compile| {
-        const run = b.addRunArtifact(compile);
-        run.setCwd(b.path("."));
-        test_step.dependOn(&run.step);
-    }
 
     const format_check = b.addSystemCommand(&.{
-        b.graph.zig_exe, "fmt", "--check", "build.zig", "src",
+        b.graph.zig_exe, "fmt", "--check", root ++ "/build.zig", root ++ "/src",
     });
-    format_check.setCwd(b.path("."));
     const verify_step = b.step("verify", "Check formatting, and run the tests and `checks`");
     verify_step.dependOn(&format_check.step);
     verify_step.dependOn(test_step);
@@ -381,14 +375,13 @@ pub fn build(b: *std.Build) void {
     var previous_cross: ?*std.Build.Step = null;
     for (cross_targets) |cross_target| {
         const cross = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "install", b.fmt("-Dtarget={s}", .{cross_target}), "--prefix", b.pathFromRoot(b.fmt("zig-out/cross/{s}", .{cross_target})) });
-        cross.setCwd(b.path("."));
         cross.has_side_effects = true;
         if (previous_cross) |previous| cross.step.dependOn(previous);
         previous_cross = &cross.step;
         cross_step.dependOn(&cross.step);
     }
     const checks_module = b.createModule(.{
-        .root_source_file = b.path("src/checks.zig"),
+        .root_source_file = b.path(root ++ "/src/checks.zig"),
         .target = target,
         .optimize = optimize,
         .sanitize_thread = thread_sanitizer,
@@ -398,14 +391,13 @@ pub fn build(b: *std.Build) void {
     checks.rdynamic = thread_sanitizer;
     check_step.dependOn(&checks.step);
     const run_checks = b.addRunArtifact(checks);
-    run_checks.setCwd(b.path("."));
     run_checks.has_side_effects = true;
     if (b.args) |args| run_checks.addArgs(args);
-    if (thread_sanitizer) run_checks.setEnvironmentVariable("TSAN_OPTIONS", b.fmt("suppressions={s}", .{b.pathFromRoot("src/tsan.supp")}));
+    if (thread_sanitizer) run_checks.setEnvironmentVariable("TSAN_OPTIONS", b.fmt("suppressions={s}", .{b.pathFromRoot(root ++ "/src/tsan.supp")}));
     b.step("checks", "Check picking, shader reloading, streaming and running out of memory, without a window").dependOn(&run_checks.step);
     verify_step.dependOn(&run_checks.step);
     const costs_module = b.createModule(.{
-        .root_source_file = b.path("src/costs.zig"),
+        .root_source_file = b.path(root ++ "/src/costs.zig"),
         .target = target,
         .optimize = optimize,
         .sanitize_thread = thread_sanitizer,
@@ -416,13 +408,13 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(&costs.step);
     const run_costs = b.addRunArtifact(costs);
     run_costs.has_side_effects = true;
-    if (thread_sanitizer) run_costs.setEnvironmentVariable("TSAN_OPTIONS", b.fmt("suppressions={s}", .{b.pathFromRoot("src/tsan.supp")}));
+    if (thread_sanitizer) run_costs.setEnvironmentVariable("TSAN_OPTIONS", b.fmt("suppressions={s}", .{b.pathFromRoot(root ++ "/src/tsan.supp")}));
     if (b.args) |args| run_costs.addArgs(args);
     b.step("costs", "Print what frames record as 2D and 3D scenes grow, without a window").dependOn(&run_costs.step);
     if (android) applyAndroidLibc(b);
 }
 
-const ffx_root = "src/third_party/ffx_sdk";
+const ffx_root = root ++ "/src/third_party/ffx_sdk";
 /// A switch of a FidelityFX shader. The flags src/render/ffx/limn_ffx.cpp
 /// makes its contexts with decide which values are asked for, and only those
 /// are compiled.
@@ -536,7 +528,7 @@ fn addFidelityFx(
     const generator = b.addExecutable(.{
         .name = "ffx_permutations",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/ffx_permutations.zig"),
+            .root_source_file = b.path(root ++ "/src/ffx_permutations.zig"),
             .target = b.graph.host,
             .optimize = .ReleaseSafe,
         }),
@@ -604,7 +596,7 @@ fn addFidelityFx(
         },
         .flags = &flags,
     });
-    library.root_module.addCSourceFile(.{ .file = b.path("src/render/ffx/limn_ffx.cpp"), .flags = &flags });
+    library.root_module.addCSourceFile(.{ .file = b.path(root ++ "/src/render/ffx/limn_ffx.cpp"), .flags = &flags });
     renderer.linkLibrary(library);
 }
 
@@ -709,7 +701,7 @@ fn addDlss(
     });
     library.root_module.addIncludePath(.{ .cwd_relative = b.pathResolve(&.{ sdk, "include" }) });
     library.root_module.addIncludePath(vulkan_include);
-    library.root_module.addCSourceFile(.{ .file = b.path("src/render/dlss/limn_dlss.cpp"), .flags = &.{ "-std=c++17", "-w" } });
+    library.root_module.addCSourceFile(.{ .file = b.path(root ++ "/src/render/dlss/limn_dlss.cpp"), .flags = &.{ "-std=c++17", "-w" } });
     renderer.linkLibrary(library);
     const windows = target.result.os.tag == .windows;
     renderer.addObjectFile(.{ .cwd_relative = b.pathResolve(&.{ sdk, dlssLibraries(target), if (windows) "nvsdk_ngx_s.lib" else "libnvsdk_ngx.a" }) });
@@ -737,7 +729,7 @@ fn addNrd(
     });
     library.root_module.addIncludePath(.{ .cwd_relative = b.pathResolve(&.{ sdk, "Include" }) });
     library.root_module.addIncludePath(vulkan_include);
-    library.root_module.addCSourceFile(.{ .file = b.path("src/render/nrd/limn_nrd.cpp"), .flags = &.{ "-std=c++17", "-w", "-DNRD_STATIC_LIBRARY" } });
+    library.root_module.addCSourceFile(.{ .file = b.path(root ++ "/src/render/nrd/limn_nrd.cpp"), .flags = &.{ "-std=c++17", "-w", "-DNRD_STATIC_LIBRARY" } });
     renderer.linkLibrary(library);
     renderer.addObjectFile(.{ .cwd_relative = b.pathResolve(&.{ sdk, "_Bin", "libNRD.a" }) });
     if (target.result.os.tag != .windows) {
@@ -756,7 +748,7 @@ fn volkModule(
     source: *std.Build.Dependency,
 ) *std.Build.Module {
     const volk = b.addTranslateC(.{
-        .root_source_file = b.path("src/rhi/vulkan/volk.h"),
+        .root_source_file = b.path(root ++ "/src/rhi/vulkan/volk.h"),
         .target = target,
         .optimize = optimize,
     });
@@ -786,12 +778,12 @@ const ShaderTools = struct {
 
 /// Compiles an application's own Slang shaders the way limn compiles its
 /// own, and gives `module` each one's SPIR-V as an anonymous import named
-/// after it, for `@embedFile`. `limn` is the application's dependency on
-/// this package; `Shader.src` is relative to the application's build root,
+/// after it, for `@embedFile`. `qaya` is the application's dependency on
+/// the SDK; `Shader.src` is relative to the application's build root,
 /// and the shaders can include limn's. Does nothing while limn's own
 /// dependencies are being fetched.
-pub fn addShaders(b: *std.Build, limn: *std.Build.Dependency, module: *std.Build.Module, shaders: []const Shader) void {
-    const paths = limn.builder.named_lazy_paths;
+pub fn addShaders(b: *std.Build, qaya: *std.Build.Dependency, module: *std.Build.Module, shaders: []const Shader) void {
+    const paths = qaya.builder.named_lazy_paths;
     const tools: ShaderTools = .{
         .slangc = if (paths.get("slangc")) |path| .{ .path = path } else .{ .system = "slangc" },
         .depfile = paths.get("depfile") orelse return,
@@ -799,17 +791,18 @@ pub fn addShaders(b: *std.Build, limn: *std.Build.Dependency, module: *std.Build
         .include = paths.get("shader_include") orelse return,
         .generated = paths.get("shader_generated") orelse return,
     };
-    compileShaders(b, module, shaders, tools, null);
+    compileShaders(b, module, ".", shaders, tools, null);
 }
 
 /// Compiles each shader with slangc, followed by `spirv_readonly` unless the
 /// shader opts out, and exposes the SPIR-V to `module` as an anonymous
 /// import. Included files are tracked through a depfile, so editing a shared
-/// header rebuilds exactly the shaders that use it.
-fn compileShaders(b: *std.Build, module: *std.Build.Module, shaders: []const Shader, tools: ShaderTools, shaders_step: ?*std.Build.Step) void {
+/// header rebuilds exactly the shaders that use it. `Shader.src` is relative
+/// to `base`, in `b`'s build root.
+fn compileShaders(b: *std.Build, module: *std.Build.Module, base: []const u8, shaders: []const Shader, tools: ShaderTools, shaders_step: ?*std.Build.Step) void {
     for (shaders) |shader| {
         const command = tools.slangc.command(b, tools.depfile, shader.name);
-        command.addFileArg(b.path(shader.src));
+        command.addFileArg(b.path(b.pathJoin(&.{ base, shader.src })));
         command.addArgs(&slang_arguments);
         command.addArgs(&.{ "-stage", shader.stage, "-entry", shader.entry });
         command.addPrefixedDirectoryArg("-I", tools.include);

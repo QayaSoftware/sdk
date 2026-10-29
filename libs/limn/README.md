@@ -2,37 +2,33 @@
 
 A high quality, performant, realtime, concurrency-first, physically based renderer written in zig with Vulkan 1.3
 
-Part of the [Qaya SDK](https://github.com/QayaSoftware/sdk), where it is developed under
-`libs/limn`.
-
-Latest docs are published to https://qayasoftware.github.io/sdk/limn/
+Latest docs are published to https://tofaa2.github.io/limn/
 
 # Path tracing
 
 Path tracing is WIP and contains noise, unfortunately RTX is an oversold concept for marketing that requires vendor locked software and tooling to make it look actually good. Its recommended to keep regular ray tracing enabled and path tracing disabled.
 
-![Sponza, path traced](.github/images/rtx_path.png)
+![Sponza, path traced](../../.github/images/rtx_path.png)
 
-|     ![meadow](.github/images/meadow.png)     |         ![rtx](.github/images/rtx.png)         |     ![world](.github/images/world.png)     |
+|     ![meadow](../../.github/images/meadow.png)     |         ![rtx](../../.github/images/rtx.png)         |     ![world](../../.github/images/world.png)     |
 | :------------------------------------------: | :--------------------------------------------: | :----------------------------------------: |
 |                  **meadow**                  |                    **rtx**                     |                 **world**                  |
-|  ![pathtrace](.github/images/pathtrace.png)  |      ![clouds](.github/images/clouds.png)      | ![materials](.github/images/materials.png) |
+|  ![pathtrace](../../.github/images/pathtrace.png)  |      ![clouds](../../.github/images/clouds.png)      | ![materials](../../.github/images/materials.png) |
 |                **pathtrace**                 |                   **clouds**                   |               **materials**                |
-|     ![lights](.github/images/lights.png)     | ![reflections](.github/images/reflections.png) |     ![water](.github/images/water.png)     |
+|     ![lights](../../.github/images/lights.png)     | ![reflections](../../.github/images/reflections.png) |     ![water](../../.github/images/water.png)     |
 |                  **lights**                  |                **reflections**                 |                 **water**                  |
-|     ![liquid](.github/images/liquid.png)     |       ![fluid](.github/images/fluid.png)       | ![particles](.github/images/particles.png) |
+|     ![liquid](../../.github/images/liquid.png)     |       ![fluid](../../.github/images/fluid.png)       | ![particles](../../.github/images/particles.png) |
 |                  **liquid**                  |                   **fluid**                    |               **particles**                |
-|       ![post](.github/images/post.png)       |      ![decals](.github/images/decals.png)      | ![animation](.github/images/animation.png) |
+|       ![post](../../.github/images/post.png)       |      ![decals](../../.github/images/decals.png)      | ![animation](../../.github/images/animation.png) |
 |                   **post**                   |                   **decals**                   |               **animation**                |
-| ![instancing](.github/images/instancing.png) |       ![views](.github/images/views.png)       |    ![shader](.github/images/shader.png)    |
+| ![instancing](../../.github/images/instancing.png) |       ![views](../../.github/images/views.png)       |    ![shader](../../.github/images/shader.png)    |
 |                **instancing**                |                   **views**                    |                 **shader**                 |
-|       ![text](.github/images/text.png)       |      ![canvas](.github/images/canvas.png)      |  ![triangle](.github/images/triangle.png)  |
+|       ![text](../../.github/images/text.png)       |      ![canvas](../../.github/images/canvas.png)      |  ![triangle](../../.github/images/triangle.png)  |
 |                   **text**                   |                   **canvas**                   |                **triangle**                |
-|  ![asteroids](.github/images/asteroids.png)  |      ![voxels](.github/images/voxels.png)      |    ![bistro](.github/images/bistro.png)    |
+|  ![asteroids](../../.github/images/asteroids.png)  |      ![voxels](../../.github/images/voxels.png)      |    ![bistro](../../.github/images/bistro.png)    |
 |                **asteroids**                 |                   **voxels**                   |                 **bistro**                 |
 
-Every picture is an example in [limn-examples](https://github.com/QayaSoftware/limn-examples):
-run it there with `zig build <name>`.
+Every picture is an example in `examples/`: run it with `zig build <name>`.
 
 ```zig
 const gfx = @import("limn");
@@ -69,38 +65,29 @@ while (running) {
 ## Build
 
 Requires Zig 0.16 and a Vulkan 1.3 driver. Everything else is fetched by
-the build: Slang, glslang and the Android NDK, so `-Dtarget` cross-compiles
-from any host (`-Dsystem_tools` uses `slangc` and `glslangValidator` from
-PATH instead).
+the build: Slang, glslang, GLFW and its platform headers, the macOS SDK
+headers, MoltenVK and the Android NDK, so `-Dtarget` cross-compiles from
+any host (`-Dsystem_tools` uses `slangc` and `glslangValidator` from PATH
+instead). The example assets are stored with Git LFS: run
+`git lfs install` before cloning, or `git lfs pull` afterwards.
 
 ```sh
-zig build            # the library
+zig build            # library and examples
+zig build run        # the meadow example
 zig build test       # unit tests
 zig build checks     # picking, reloading, streaming and out of memory, without a window
-zig build verify     # formatting, tests and checks
+zig build verify     # formatting, tests, and the examples under Vulkan validation
 zig build docs       # API reference in zig-out/docs
 zig build cross      # every desktop target and Android, into zig-out/cross
 ```
 
-## Using it
+For `-Dtarget=aarch64-linux-android` each example becomes an APK in
+`zig-out/apk`, signed with a fixed debug key: `adb install` it. macOS
+builds put `libMoltenVK.dylib` beside the examples.
 
-limn comes with the Qaya SDK:
-
-```sh
-zig fetch --save git+https://github.com/QayaSoftware/sdk
-```
-
-```zig
-const qaya = b.dependency("qaya", .{ .target = target, .optimize = optimize });
-exe.root_module.addImport("limn", qaya.module("limn"));
-```
-
-limn's `build.zig` also gives an application's build what limn's own uses:
-`addShaders` compiles its Slang shaders, which can include limn's, into SPIR-V
-for `@embedFile`, and `applyAndroidLibc` builds it for Android with the
-fetched NDK; the SDK's README shows how to reach them.
-[limn-examples](https://github.com/QayaSoftware/limn-examples) uses both, and
-packs Android builds into APKs.
+Add `-Doptimize=ReleaseFast` for full speed. Every example takes `--frames N`
+and `--screenshot file.png`, and lists its keys at the top of its source
+file.
 
 ## Documentation
 
@@ -127,6 +114,6 @@ Apache-2.0; see [`LICENSE`](LICENSE). Bundled work keeps its own terms:
 - FidelityFX SDK 1.1.4, for Super Resolution 2 and 3 (MIT): `src/third_party/ffx_sdk`
 - Linearly transformed cosine tables (BSD-style, Heitz et al. 2016): `src/third_party/ltc`
 - DejaVu Sans, the built-in font: `src/render/fonts/LICENSE`
-- The test model and fonts: `testdata/README.md`; the examples' assets are listed in limn-examples
+- Example models, environments and fonts, some for non-commercial use only: `examples/assets/README.md`
 
 Not bundled, but built in whenever `dlss_sdk/` or `nrd_sdk/` is present (`zig build dlss-sdk`, `zig build nrd-sdk`): NVIDIA DLSS and NRD, under the NVIDIA RTX SDKs license. Build with `-Ddlss=false -Dnrd=false` to leave them out.

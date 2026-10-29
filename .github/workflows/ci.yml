@@ -1,12 +1,9 @@
-name: limn
+name: ci
 
 on:
   push:
     branches: [master]
-    paths: ["libs/limn/**", ".github/workflows/limn.yml"]
   pull_request:
-    paths: ["libs/limn/**", ".github/workflows/limn.yml"]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,10 +11,6 @@ permissions:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
-defaults:
-  run:
-    working-directory: libs/limn
 
 jobs:
   linux:
@@ -37,8 +30,8 @@ jobs:
         with:
           version: 0.16.0
       - name: Formatting
-        run: zig fmt --check build.zig src
-      - name: Compile the library, tests and tools
+        run: zig fmt --check build.zig libs/limn libs/slime/build.zig
+      - name: Compile everything and its tests
         run: zig build check
       - name: Unit tests
         run: zig build test
@@ -54,7 +47,7 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.16.0
-      - name: Compile the library, tests and tools
+      - name: Compile everything and its tests
         run: zig build check
       - name: Unit tests
         run: zig build test

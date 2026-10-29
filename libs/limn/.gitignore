@@ -1,8 +1,0 @@
-.zig-cache/
-zig-out/
-zig-pkg/
-.direnv/
-*.o
-dlss_sdk/
-nrd_sdk/
-/core.[0-9]*

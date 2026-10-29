@@ -3,10 +3,8 @@ name: docs
 on:
   push:
     branches: [master]
-    paths: ["libs/*/src/**", ".github/workflows/docs.yml"]
   pull_request:
     branches: [master]
-    paths: ["libs/*/src/**", ".github/workflows/docs.yml"]
   workflow_dispatch:
 
 permissions:
@@ -33,17 +31,11 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.16.0
-      - name: Generate limn's docs
-        working-directory: libs/limn
+      - name: Generate docs
         run: zig build docs
-      - name: Assemble the site
-        run: |
-          mkdir -p site
-          cp -r libs/limn/zig-out/docs site/limn
-          printf '<!doctype html>\n<meta charset="utf-8">\n<title>Qaya SDK</title>\n<h1>Qaya SDK</h1>\n<ul><li><a href="limn/">limn</a></li></ul>\n' > site/index.html
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
-          path: site
+          path: zig-out/docs
 
   deploy:
     if: github.event_name != 'pull_request'
