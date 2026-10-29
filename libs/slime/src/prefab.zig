@@ -97,9 +97,10 @@ pub fn encodePrefabBinary(allocator: std.mem.Allocator, id: u32, comptime types:
     const sig = registry.maskMany(types);
 
     var wody = std.Io.Writer.Allocating.init(allocator);
-    errdefer wody.deinit();
+    defer wody.deinit();
 
-    inline for (types, 0..) |T, ti| {
+    inline for (comptime idOrder(types)) |ti| {
+        const T = types[ti];
         const val = values[ti];
         const size = @sizeOf(T);
         try writeU32(&wody.writer, @intCast(size));
@@ -108,7 +109,20 @@ pub fn encodePrefabBinary(allocator: std.mem.Allocator, id: u32, comptime types:
 
     var out_body = std.Io.Writer.Allocating.init(allocator);
     errdefer out_body.deinit();
-    try writePrefabBinary(&out_body.writer, id, sig, wody.toArrayList().items);
-    var ow_list = out_body.toArrayList();
-    return try ow_list.toOwnedSlice(allocator);
+    try writePrefabBinary(&out_body.writer, id, sig, wody.written());
+    return try out_body.toOwnedSlice();
+}
+
+/// The indices of `types` in ascending component id, the order `World.spawnPrefab` reads a payload in.
+fn idOrder(comptime types: []const type) [types.len]usize {
+    var order: [types.len]usize = undefined;
+    for (&order, 0..) |*slot, i| slot.* = i;
+    var i: usize = 1;
+    while (i < order.len) : (i += 1) {
+        var j = i;
+        while (j > 0 and registry.id(types[order[j - 1]]) > registry.id(types[order[j]])) : (j -= 1) {
+            std.mem.swap(usize, &order[j - 1], &order[j]);
+        }
+    }
+    return order;
 }
