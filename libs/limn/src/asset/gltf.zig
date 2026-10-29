@@ -2532,21 +2532,17 @@ test "a node that is its own child is refused" {
     acquireLibraries(io);
     defer releaseLibraries(io);
     const path = ".zig-cache/limn-test-cycle.gltf";
-    {
-        const file = try std.Io.Dir.cwd().createFile(io, path, .{});
-        defer file.close(io);
-        var buffer: [256]u8 = undefined;
-        var writer = file.writerStreaming(io, &buffer);
-        try writer.interface.writeAll(
-            \\{"asset":{"version":"2.0"},"nodes":[{"children":[0]}]}
-        );
-        try writer.interface.flush();
-    }
+    try writeTestFile(io, path,
+        \\{"asset":{"version":"2.0"},"nodes":[{"children":[0]}]}
+    );
     defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
     try std.testing.expectError(error.InvalidGltf, loadLights(std.testing.allocator, io, path));
 }
 
+/// Writes `text` to `path`, making its directory first: the build's cache
+/// need not be where the tests run.
 fn writeTestFile(io: std.Io, path: []const u8, text: []const u8) !void {
+    try std.Io.Dir.cwd().createDirPath(io, std.fs.path.dirname(path) orelse ".");
     const file = try std.Io.Dir.cwd().createFile(io, path, .{});
     defer file.close(io);
     var buffer: [256]u8 = undefined;
