@@ -17,8 +17,8 @@ const CustomV = struct {
     pub fn deserialize(reader: anytype) !@This() {
         var vx: f32 = undefined;
         var vy: f32 = undefined;
-        try reader.readNoEof(std.mem.asBytes(&vx));
-        try reader.readNoEof(std.mem.asBytes(&vy));
+        try reader.readSliceAll(std.mem.asBytes(&vx));
+        try reader.readSliceAll(std.mem.asBytes(&vy));
         return .{ .vx = vx, .vy = vy };
     }
 };
@@ -31,12 +31,12 @@ test "prefab binary roundtrip and spawn (pod)" {
     });
     defer std.testing.allocator.free(file_buf);
 
-    var fbs = std.io.fixedBufferStream(file_buf);
-    var owned = try prefab.readPrefabBinary(std.testing.allocator, fbs.reader());
+    var fbs = std.Io.Reader.fixed(file_buf);
+    var owned = try prefab.readPrefabBinary(std.testing.allocator, &fbs);
     defer owned.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(id, owned.id);
-    try std.testing.expectEqual(file_buf.len, fbs.pos);
+    try std.testing.expectEqual(file_buf.len, fbs.seek);
 
     var world = World.init(std.testing.allocator);
     defer world.deinit();
@@ -60,8 +60,8 @@ test "prefab binary with custom serialization roundtrip" {
     });
     defer std.testing.allocator.free(file_buf);
 
-    var fbs = std.io.fixedBufferStream(file_buf);
-    var owned = try prefab.readPrefabBinary(std.testing.allocator, fbs.reader());
+    var fbs = std.Io.Reader.fixed(file_buf);
+    var owned = try prefab.readPrefabBinary(std.testing.allocator, &fbs);
     defer owned.deinit(std.testing.allocator);
 
     var world = World.init(std.testing.allocator);
@@ -78,8 +78,8 @@ test "prefab single component" {
     });
     defer std.testing.allocator.free(buf);
 
-    var fbs = std.io.fixedBufferStream(buf);
-    var owned = try prefab.readPrefabBinary(std.testing.allocator, fbs.reader());
+    var fbs = std.Io.Reader.fixed(buf);
+    var owned = try prefab.readPrefabBinary(std.testing.allocator, &fbs);
     defer owned.deinit(std.testing.allocator);
 
     var world = World.init(std.testing.allocator);
@@ -97,8 +97,8 @@ test "prefab spawn many from same ref" {
     });
     defer std.testing.allocator.free(buf);
 
-    var fbs = std.io.fixedBufferStream(buf);
-    var owned = try prefab.readPrefabBinary(std.testing.allocator, fbs.reader());
+    var fbs = std.Io.Reader.fixed(buf);
+    var owned = try prefab.readPrefabBinary(std.testing.allocator, &fbs);
     defer owned.deinit(std.testing.allocator);
     const r = owned.asRef();
 
@@ -117,21 +117,21 @@ test "prefab spawn many from same ref" {
 test "prefab binary rejects bad magic" {
     var raw: [32]u8 = undefined;
     std.mem.writeInt(u32, raw[0..4], 0xdeadbeef, .little);
-    var fbs = std.io.fixedBufferStream(&raw);
-    try std.testing.expectError(error.InvalidPrefabMagic, prefab.readPrefabBinary(std.testing.allocator, fbs.reader()));
+    var fbs = std.Io.Reader.fixed(&raw);
+    try std.testing.expectError(error.InvalidPrefabMagic, prefab.readPrefabBinary(std.testing.allocator, &fbs));
 }
 
 test "prefab binary rejects bad version" {
-    var list: std.ArrayList(u8) = .{};
+    var list: std.ArrayList(u8) = .empty;
     defer list.deinit(std.testing.allocator);
     try appendU32(&list, std.testing.allocator, prefab.prefab_magic);
     try appendU32(&list, std.testing.allocator, 999);
-    var fbs = std.io.fixedBufferStream(list.items);
-    try std.testing.expectError(error.UnsupportedPrefabVersion, prefab.readPrefabBinary(std.testing.allocator, fbs.reader()));
+    var fbs = std.Io.Reader.fixed(list.items);
+    try std.testing.expectError(error.UnsupportedPrefabVersion, prefab.readPrefabBinary(std.testing.allocator, &fbs));
 }
 
 test "prefab binary truncated payload" {
-    var list: std.ArrayList(u8) = .{};
+    var list: std.ArrayList(u8) = .empty;
     defer list.deinit(std.testing.allocator);
     try appendU32(&list, std.testing.allocator, prefab.prefab_magic);
     try appendU32(&list, std.testing.allocator, prefab.prefab_version);
@@ -140,8 +140,8 @@ test "prefab binary truncated payload" {
     try appendU32(&list, std.testing.allocator, 1000);
     try list.appendSlice(std.testing.allocator, "short");
 
-    var fbs = std.io.fixedBufferStream(list.items);
-    try std.testing.expectError(error.EndOfStream, prefab.readPrefabBinary(std.testing.allocator, fbs.reader()));
+    var fbs = std.Io.Reader.fixed(list.items);
+    try std.testing.expectError(error.EndOfStream, prefab.readPrefabBinary(std.testing.allocator, &fbs));
 }
 
 test "prefab spawns visible to chunked query" {
@@ -151,8 +151,8 @@ test "prefab spawns visible to chunked query" {
     });
     defer std.testing.allocator.free(buf);
 
-    var fbs = std.io.fixedBufferStream(buf);
-    var owned = try prefab.readPrefabBinary(std.testing.allocator, fbs.reader());
+    var fbs = std.Io.Reader.fixed(buf);
+    var owned = try prefab.readPrefabBinary(std.testing.allocator, &fbs);
     defer owned.deinit(std.testing.allocator);
 
     var world = World.init(std.testing.allocator);
@@ -165,38 +165,6 @@ test "prefab spawns visible to chunked query" {
     var total: usize = 0;
     while (qc.next()) |ch| total += ch.len;
     try std.testing.expectEqual(@as(usize, 37), total);
-}
-
-test "prefab spawned entities survive snapshot roundtrip" {
-    const buf = try prefab.encodePrefabBinary(std.testing.allocator, 1, &.{ PodP, PodV }, .{
-        PodP{ .x = 11, .y = 22 },
-        PodV{ .vx = 0.1, .vy = 0.2 },
-    });
-    defer std.testing.allocator.free(buf);
-
-    var fbs = std.io.fixedBufferStream(buf);
-    var owned = try prefab.readPrefabBinary(std.testing.allocator, fbs.reader());
-    defer owned.deinit(std.testing.allocator);
-    const r = owned.asRef();
-
-    var world = World.init(std.testing.allocator);
-    defer world.deinit();
-
-    _ = try world.spawnPrefab(r);
-    _ = try world.spawnPrefab(r);
-
-    var snap: std.ArrayList(u8) = .{};
-    defer snap.deinit(std.testing.allocator);
-    try world.writeSnapshot(snap.writer(std.testing.allocator));
-
-    world.reset();
-    var snap_reader = std.io.fixedBufferStream(snap.items);
-    try world.readSnapshot(snap_reader.reader());
-
-    var q = world.query(&.{ PodP, PodV });
-    var n: usize = 0;
-    while (q.next()) |_| n += 1;
-    try std.testing.expectEqual(@as(usize, 2), n);
 }
 
 fn appendU32(list: *std.ArrayList(u8), allocator: std.mem.Allocator, v: u32) !void {

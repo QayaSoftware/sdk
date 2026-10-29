@@ -98,7 +98,7 @@ test "perf spawn and query" {
     defer world.deinit();
 
     const n: usize = 10_000;
-    var timer = try std.time.Timer.start();
+    var timer = std.Io.Timestamp.now(std.testing.io, .awake);
     var i: usize = 0;
     while (i < n) : (i += 1) {
         _ = try world.spawn(&.{ P, V }, .{
@@ -106,13 +106,13 @@ test "perf spawn and query" {
             V{ .vx = 0, .vy = 0 },
         });
     }
-    const spawn_ns = timer.lap();
+    const spawn_ns = timer.untilNow(std.testing.io, .awake).toNanoseconds();
 
-    timer.reset();
+    timer = std.Io.Timestamp.now(std.testing.io, .awake);
     var q = world.query(&.{ P, V });
     var count: usize = 0;
     while (q.next()) |_| count += 1;
-    const query_ns = timer.lap();
+    const query_ns = timer.untilNow(std.testing.io, .awake).toNanoseconds();
 
     try std.testing.expectEqual(n, count);
     try std.testing.expect(spawn_ns < 5_000_000_000);
