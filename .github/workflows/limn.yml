@@ -6,6 +6,7 @@ on:
     paths: ["libs/limn/**", ".github/workflows/limn.yml"]
   pull_request:
     paths: ["libs/limn/**", ".github/workflows/limn.yml"]
+  workflow_dispatch:
 
 permissions:
   contents: read

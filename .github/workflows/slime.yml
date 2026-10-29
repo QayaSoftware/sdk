@@ -6,6 +6,7 @@ on:
     paths: ["libs/slime/**", ".github/workflows/slime.yml"]
   pull_request:
     paths: ["libs/slime/**", ".github/workflows/slime.yml"]
+  workflow_dispatch:
 
 permissions:
   contents: read
