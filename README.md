@@ -2,11 +2,6 @@
 
 Low-dependency Zig libraries for games and applications.
 
-![Sponza, path traced](.github/images/rtx_path.png)
-
-| ![meadow](.github/images/meadow.png) | ![world](.github/images/world.png) | ![water](.github/images/water.png) |
-| :-: | :-: | :-: |
-
 | Library | |
 | --- | --- |
 | [limn](libs/limn) | A high performance physically based renderer written in Zig using Vulkan |
