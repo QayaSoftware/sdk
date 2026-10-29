@@ -1,0 +1,30 @@
+name: slime
+
+on:
+  push:
+    branches: [master]
+    paths: ["libs/slime/**", ".github/workflows/slime.yml"]
+  pull_request:
+    paths: ["libs/slime/**", ".github/workflows/slime.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: libs/slime
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+      - name: Unit tests
+        run: zig build test

@@ -1,0 +1,17 @@
+.{
+    .name = .qaya,
+    .fingerprint = 0x7f9a2a83ffd12b64,
+    .version = "0.0.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .limn = .{ .path = "libs/limn", .lazy = true },
+        .slime = .{ .path = "libs/slime", .lazy = true },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "libs",
+        "LICENSE",
+        "README.md",
+    },
+}

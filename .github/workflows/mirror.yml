@@ -1,0 +1,49 @@
+name: mirror
+
+on:
+  push:
+    branches: [master]
+    tags: ["*-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - library: limn
+            repository: Tofaa2/limn
+            key: LIMN_MIRROR_KEY
+          - library: slime
+            repository: Tofaa2/slime
+            key: SLIME_MIRROR_KEY
+    env:
+      GIT_SSH_COMMAND: ssh -i ~/.ssh/mirror -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+      MIRROR: git@github.com:${{ matrix.repository }}.git
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Load the deploy key
+        env:
+          KEY: ${{ secrets[matrix.key] }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/mirror
+          chmod 600 ~/.ssh/mirror
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > ~/.ssh/known_hosts
+      - name: Push libs/${{ matrix.library }} to ${{ matrix.repository }}
+        if: github.ref_type == 'branch'
+        run: git push "$MIRROR" "$(git subtree split --prefix=libs/${{ matrix.library }} "$GITHUB_SHA"):refs/heads/master"
+      - name: Push the release tag to ${{ matrix.repository }}
+        if: github.ref_type == 'tag' && startsWith(github.ref_name, format('{0}-v', matrix.library))
+        run: git push "$MIRROR" "$(git subtree split --prefix=libs/${{ matrix.library }} "$GITHUB_SHA"):refs/tags/${GITHUB_REF_NAME#${{ matrix.library }}-}"
