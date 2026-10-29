@@ -1,6 +1,6 @@
 //! Trims the source archive of `zig build docs` to the named modules.
 //!
-//!   docs_trim sources.tar trimmed.tar renderer texture_codec
+//!   docs_trim sources.tar trimmed.tar limn texture_codec
 const std = @import("std");
 
 const block = 512;

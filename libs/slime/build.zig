@@ -1,104 +1,15 @@
 const std = @import("std");
+const Sdk = @import("../../build/Sdk.zig");
 
-/// Where slime is in the SDK; the paths below are relative to the SDK.
-const root = "libs/slime";
-
-/// Adds slime to the SDK's build: its module, `slime`, its examples, and
-/// its tests under `test_step`.
-pub fn build(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, test_step: *std.Build.Step) void {
-    const options = b.addOptions();
+/// slime's part of the SDK's build: its options and its examples.
+pub fn build(lib: *Sdk.Library) void {
+    const options = lib.b.addOptions();
     options.addOption(bool, "thread_safe", false);
+    lib.module.addOptions("options", options);
 
-    const mod = b.addModule("slime", .{
-        .root_source_file = b.path(root ++ "/src/root.zig"),
-        .target = target,
-    });
-    mod.addOptions("options", options);
-
-    const mod_tests = b.addTest(.{
-        .root_module = mod,
-    });
-
-    const run_mod_tests = b.addRunArtifact(mod_tests);
-
-    test_step.dependOn(&run_mod_tests.step);
-
-    const example_imports: []const std.Build.Module.Import = &.{
-        .{ .name = "slime", .module = mod },
-    };
-
-    const basic_mod = b.createModule(.{
-        .root_source_file = b.path(root ++ "/examples/basic.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = example_imports,
-    });
-    const basic_exe = b.addExecutable(.{ .name = "slime-example", .use_llvm = true, .root_module = basic_mod });
-    b.installArtifact(basic_exe);
-    const run_basic = b.addRunArtifact(basic_exe);
-    run_basic.step.dependOn(b.getInstallStep());
-    const example_step = b.step("example", "Run examples/basic.zig");
-    example_step.dependOn(&run_basic.step);
-
-    const prefabs_mod = b.createModule(.{
-        .root_source_file = b.path(root ++ "/examples/prefabs.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = example_imports,
-    });
-    const prefabs_exe = b.addExecutable(
-        .{
-            .name = "slime-example-prefabs",
-            .use_llvm = true,
-            .root_module = prefabs_mod,
-        },
-    );
-    b.installArtifact(prefabs_exe);
-    const run_prefabs = b.addRunArtifact(prefabs_exe);
-    run_prefabs.step.dependOn(b.getInstallStep());
-    const example_prefabs_step = b.step("example-prefabs", "Run examples/prefabs.zig");
-    example_prefabs_step.dependOn(&run_prefabs.step);
-
-    const parallel_mod = b.createModule(.{
-        .root_source_file = b.path(root ++ "/examples/parallel.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = example_imports,
-    });
-    const parallel_exe = b.addExecutable(.{ .name = "slime-example-parallel", .use_llvm = true, .root_module = parallel_mod });
-    b.installArtifact(parallel_exe);
-    const run_parallel = b.addRunArtifact(parallel_exe);
-    run_parallel.step.dependOn(b.getInstallStep());
-    const example_parallel_step = b.step("example-parallel", "Run examples/parallel.zig");
-    example_parallel_step.dependOn(&run_parallel.step);
-
-    const examples_all = b.step("examples", "Run basic, prefabs, and parallel examples");
-    examples_all.dependOn(&run_basic.step);
-    examples_all.dependOn(&run_prefabs.step);
-    examples_all.dependOn(&run_parallel.step);
-
-    const perf_mod = b.createModule(.{
-        .root_source_file = b.path(root ++ "/examples/performance.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = example_imports,
-        .link_libc = true, // For c_allocator
-    });
-    const perf_exe = b.addExecutable(.{
-        .name = "slime-perf",
-        .root_module = perf_mod,
-        .use_llvm = true,
-    });
-    b.installArtifact(perf_exe);
-    const run_perf = b.addRunArtifact(perf_exe);
-    run_perf.step.dependOn(b.getInstallStep());
-    const performance_step = b.step(
-        "performance",
-        "Run ECS micro-benchmarks (timer). Optional: zig build performance -Doptimize=ReleaseFast -- 100000",
-    );
-    performance_step.dependOn(&run_perf.step);
-
-    if (b.args) |args| {
-        run_perf.addArgs(args);
-    }
+    _ = lib.addExample("basic", "Run examples/basic.zig");
+    _ = lib.addExample("prefabs", "Run examples/prefabs.zig");
+    _ = lib.addExample("parallel", "Run examples/parallel.zig");
+    const performance = lib.addExample("performance", "Run ECS micro-benchmarks (timer). Optional: zig build slime-performance -Doptimize=ReleaseFast -- 100000");
+    performance.root_module.link_libc = true;
 }

@@ -2,7 +2,7 @@
 
 A high quality, performant, realtime, concurrency-first, physically based renderer written in zig with Vulkan 1.3
 
-Latest docs are published to https://tofaa2.github.io/limn/
+Latest docs are published to https://qayasoftware.github.io/sdk/limn/
 
 # Path tracing
 
@@ -60,7 +60,7 @@ while (running) {
 | Your own GPU work in a frame | `ViewDesc.passes`, `materials.createShader` | `passes`, `shader` |
 | No renderer, just the device layer | `rhi.Device` | `triangle` |
 
-`zig build costs` prints what frames record as each kind of scene grows.
+`zig build limn-costs` prints what frames record as each kind of scene grows.
 
 ## Build
 
@@ -70,12 +70,12 @@ from any host (`-Dsystem_tools` uses `slangc` and `glslangValidator` from PATH
 instead).
 
 ```sh
-zig build            # library
-zig build test       # unit tests
-zig build checks     # picking, reloading and out of memory, without a window
-zig build verify     # formatting, tests and checks
-zig build docs       # API reference in zig-out/docs
-zig build cross      # every desktop target and Android, into zig-out/cross
+zig build              # library
+zig build test         # unit tests
+zig build limn-checks  # picking, reloading and out of memory, without a window
+zig build limn-verify  # formatting, tests and checks
+zig build docs         # API reference in zig-out/docs
+zig build cross        # every desktop target and Android, into zig-out/cross
 ```
 
 Building and running the examples, including as Android APKs, is covered in
@@ -108,4 +108,4 @@ Apache-2.0; see [`LICENSE`](LICENSE). Bundled work keeps its own terms:
 - DejaVu Sans, the built-in font: `src/render/fonts/LICENSE`
 - Example models, environments and fonts, some for non-commercial use only: [limn-examples](https://github.com/QayaSoftware/limn-examples/blob/master/examples/assets/README.md)
 
-Not bundled, but built in whenever `dlss_sdk/` or `nrd_sdk/` is present (`zig build dlss-sdk`, `zig build nrd-sdk`): NVIDIA DLSS and NRD, under the NVIDIA RTX SDKs license. Build with `-Ddlss=false -Dnrd=false` to leave them out.
+Not bundled, but built in whenever `dlss_sdk/` or `nrd_sdk/` is present (`zig build limn-dlss-sdk`, `zig build limn-nrd-sdk`): NVIDIA DLSS and NRD, under the NVIDIA RTX SDKs license. Build with `-Ddlss=false -Dnrd=false` to leave them out.
