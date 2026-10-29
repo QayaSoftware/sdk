@@ -1,5 +1,7 @@
 const std = @import("std");
 
+/// A handle to an entity: its slot and the generation the slot was at when
+/// the entity was made, so a handle to a despawned entity never resolves.
 pub const Entity = packed struct(u64) {
     index: u32,
     generation: u32,
@@ -10,19 +12,7 @@ pub const Entity = packed struct(u64) {
         return self.index == other.index and self.generation == other.generation;
     }
 
-    pub fn format(
-        self: Entity,
-        comptime _: []const u8,
-        _: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        try writer.print("Entity({},{})", .{ self.index, self.generation });
+    pub fn format(self: Entity, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        try writer.print("Entity({d},{d})", .{ self.index, self.generation });
     }
-};
-
-pub const EntitySlot = struct {
-    generation: u32,
-    alive: bool,
-    archetype: u32,
-    row: u32,
 };

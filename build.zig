@@ -9,5 +9,7 @@ pub fn build(b: *std.Build) void {
     const sdk = Sdk.create(b);
     sdk.add("limn", limn);
     sdk.add("slime", @import("libs/slime/build.zig"));
+    sdk.add("commands", @import("libs/commands/build.zig"));
+    sdk.add("cli", @import("libs/cli/build.zig"));
     sdk.finish();
 }

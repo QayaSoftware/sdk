@@ -1,74 +1,47 @@
-/// Ensures events persist long enough for all systems to read them.
+//! Events of one type, delivered the frame after they are sent: systems read
+//! last frame's events, which nothing changes until `update`, while this
+//! frame's collect separately. A system running every frame sees each event
+//! exactly once, whichever side of the sender it runs on, and reading never
+//! races with sending.
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 
-/// Returns an EventChannel type for the given event type E.
-/// Store one instance per event type as a World resource.
 pub fn EventChannel(comptime E: type) type {
     return struct {
         const Self = @This();
 
-        /// Events written in the current and previous frame.
-        a: std.ArrayListUnmanaged(E) = .empty,
-        b: std.ArrayListUnmanaged(E) = .empty,
-        /// If true, 'a' is the "new" buffer.
-        a_is_new: bool = true,
-        allocator: std.mem.Allocator,
-        locked: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        gpa: Allocator,
+        io: std.Io,
+        /// Sent last frame; read this frame.
+        readable: std.ArrayList(E) = .empty,
+        /// Sent this frame so far.
+        pending: std.ArrayList(E) = .empty,
+        /// Guards `pending`, which any system may send to at any time.
+        mutex: std.Io.Mutex = .init,
 
-        pub fn init(allocator: std.mem.Allocator) Self {
-            return .{ .allocator = allocator };
-        }
-
-        fn lock(self: *Self) void {
-            while (true) {
-                if ((self.locked.cmpxchgWeak(false, true, .acquire, .acquire) orelse false)) {
-                    break;
-                }
-                std.atomic.spinLoopHint();
-            }
-        }
-
-        fn unlock(self: *Self) void {
-            self.locked.store(false, .release);
+        pub fn init(gpa: Allocator, io: std.Io) Self {
+            return .{ .gpa = gpa, .io = io };
         }
 
         pub fn deinit(self: *Self) void {
-            self.lock();
-            defer self.unlock();
-            self.a.deinit(self.allocator);
-            self.b.deinit(self.allocator);
+            self.readable.deinit(self.gpa);
+            self.pending.deinit(self.gpa);
         }
 
-        /// Enqueue an event for the current frame.
-        pub fn send(self: *Self, event: E) !void {
-            self.lock();
-            defer self.unlock();
-            const new = if (self.a_is_new) &self.a else &self.b;
-            try new.append(self.allocator, event);
+        pub fn send(self: *Self, event: E) Allocator.Error!void {
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
+            try self.pending.append(self.gpa, event);
         }
 
-        /// Returns an iterator-like structure or slices for both buffers.
-        /// To keep it simple and performant, we'll provide two slices.
-        pub const EventReader = struct {
-            old: []const E,
-            new: []const E,
-        };
-
-        pub fn read(self: *const Self) EventReader {
-            if (self.a_is_new) {
-                return .{ .old = self.b.items, .new = self.a.items };
-            } else {
-                return .{ .old = self.a.items, .new = self.b.items };
-            }
+        pub fn read(self: *const Self) []const E {
+            return self.readable.items;
         }
 
-        /// Swap buffers and clear the oldest one.
+        /// Makes this frame's events readable and drops last frame's.
         pub fn update(self: *Self) void {
-            self.lock();
-            defer self.unlock();
-            self.a_is_new = !self.a_is_new;
-            const new = if (self.a_is_new) &self.a else &self.b;
-            new.clearRetainingCapacity();
+            std.mem.swap(std.ArrayList(E), &self.readable, &self.pending);
+            self.pending.clearRetainingCapacity();
         }
     };
 }

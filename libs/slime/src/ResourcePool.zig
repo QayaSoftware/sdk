@@ -1,143 +1,116 @@
-/// Type-safe, type-keyed resource storage.
-/// Resources are singletons keyed by their Zig type — one instance per type.
+//! One value per type, indexed by the type's registry id. Adding, setting
+//! and removing are not thread-safe; reading and writing the values are as
+//! safe as the systems' declared access makes them.
 const std = @import("std");
-const typeIdInt = @import("util/type_id.zig").typeIdInt;
-const ResourcePool = @This();
-const options = @import("options");
+const Allocator = std.mem.Allocator;
+const registry = @import("registry.zig");
 
-const ResourceEntry = struct {
-    ptr: *anyopaque,
-    destroyFn: *const fn (allocator: std.mem.Allocator, ptr: *anyopaque) void,
+const ResourcePool = @This();
+
+entries: std.ArrayList(?Entry),
+
+pub const empty: ResourcePool = .{ .entries = .empty };
+
+/// Who frees a resource added by pointer.
+pub const Ownership = enum {
+    /// The world destroys it with its allocator, which must have made it.
+    owned,
+    /// The caller keeps it alive and frees it.
+    borrowed,
 };
 
-allocator: std.mem.Allocator,
-map: std.AutoHashMapUnmanaged(usize, ResourceEntry),
-locked: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+const Entry = struct {
+    ptr: *anyopaque,
+    /// Null for a borrowed resource.
+    destroy: ?*const fn (gpa: Allocator, ptr: *anyopaque) void,
+};
 
-
-
-/// Resets the entire pool. UNSAFE: 
-pub fn reset(self: *ResourcePool) void {
-    self.lock();
-    defer self.unlock();
-    self.map.clearAndFree(self.allocator);
-    
+pub fn deinit(self: *ResourcePool, gpa: Allocator) void {
+    for (self.entries.items) |entry| destroy(gpa, entry);
+    self.entries.deinit(gpa);
 }
 
-pub fn init(self: *ResourcePool, allocator: std.mem.Allocator) void {
-    self.* = .{
-        .allocator = allocator,
-        .map = .{},
-    };
-}
-
-pub fn lock(self: *ResourcePool) void {
-    if (!options.thread_safe) {
-        return;
-    }
-    while (true) {
-        if ((self.locked.cmpxchgWeak(false, true, .acquire, .acquire) orelse false)) {
-            break;
-        }
-        std.atomic.spinLoopHint();
-    }
-}
-
-pub fn unlock(self: *ResourcePool) void {
-    if (!options.thread_safe) {
-        return;
-    }
-    self.locked.store(false, .release);
-}
-
-pub fn deinit(self: *ResourcePool) void {
-    self.lock();
-    defer self.unlock();
-
-    var it = self.map.iterator();
-    while (it.next()) |entry| {
-        entry.value_ptr.destroyFn(self.allocator, entry.value_ptr.ptr);
-    }
-    self.map.deinit(self.allocator);
-}
-
-/// Add a resource by value (copied into the pool).
-pub fn add(self: *ResourcePool, value: anytype) !void {
-    self.lock();
-    defer self.unlock();
-
+pub fn add(self: *ResourcePool, gpa: Allocator, value: anytype) (Allocator.Error || error{AlreadyExists})!void {
     const T = @TypeOf(value);
-    const id = typeIdInt(T);
-    if (self.map.contains(id)) return error.ResourceAlreadyExists;
+    const entry = try self.slot(gpa, registry.id(T));
+    if (entry.* != null) return error.AlreadyExists;
+    entry.* = try copy(gpa, value);
+}
 
-    const ptr = try self.allocator.create(T);
+pub fn set(self: *ResourcePool, gpa: Allocator, value: anytype) Allocator.Error!void {
+    const T = @TypeOf(value);
+    const entry = try self.slot(gpa, registry.id(T));
+    const fresh = try copy(gpa, value);
+    destroy(gpa, entry.*);
+    entry.* = fresh;
+}
+
+pub fn addPtr(self: *ResourcePool, gpa: Allocator, comptime T: type, ptr: *T, ownership: Ownership) (Allocator.Error || error{AlreadyExists})!void {
+    const entry = try self.slot(gpa, registry.id(T));
+    if (entry.* != null) return error.AlreadyExists;
+    entry.* = .{ .ptr = ptr, .destroy = switch (ownership) {
+        .owned => destroyer(T),
+        .borrowed => null,
+    } };
+}
+
+pub fn remove(self: *ResourcePool, gpa: Allocator, comptime T: type) bool {
+    const cid = registry.id(T);
+    if (cid >= self.entries.items.len) return false;
+    const entry = self.entries.items[cid] orelse return false;
+    destroy(gpa, entry);
+    self.entries.items[cid] = null;
+    return true;
+}
+
+pub fn get(self: *const ResourcePool, comptime T: type) ?*T {
+    const cid = registry.id(T);
+    if (cid >= self.entries.items.len) return null;
+    const entry = self.entries.items[cid] orelse return null;
+    return @ptrCast(@alignCast(entry.ptr));
+}
+
+fn slot(self: *ResourcePool, gpa: Allocator, cid: registry.ComponentId) Allocator.Error!*?Entry {
+    if (cid >= self.entries.items.len) try self.entries.appendNTimes(gpa, null, cid + 1 - self.entries.items.len);
+    return &self.entries.items[cid];
+}
+
+fn copy(gpa: Allocator, value: anytype) Allocator.Error!Entry {
+    const T = @TypeOf(value);
+    const ptr = try gpa.create(T);
     ptr.* = value;
-    try self.map.put(self.allocator, id, .{
-        .ptr = ptr,
-        .destroyFn = makeDestroyFn(T),
-    });
+    return .{ .ptr = ptr, .destroy = destroyer(T) };
 }
 
-/// Add a resource by pointer (pool takes ownership).
-pub fn addOwned(self: *ResourcePool, comptime T: type, ptr: *T) !void {
-    self.lock();
-    defer self.unlock();
-
-    const id = typeIdInt(T);
-    if (self.map.contains(id)) return error.ResourceAlreadyExists;
-    try self.map.put(self.allocator, id, .{
-        .ptr = ptr,
-        .destroyFn = makeDestroyFn(T),
-    });
+fn destroy(gpa: Allocator, entry: ?Entry) void {
+    const found = entry orelse return;
+    if (found.destroy) |f| f(gpa, found.ptr);
 }
 
-/// Add a resource by pointer without taking ownership.
-pub fn addBorrowed(self: *ResourcePool, comptime T: type, ptr: *T) !void {
-    self.lock();
-    defer self.unlock();
-
-    const id = typeIdInt(T);
-    if (self.map.contains(id)) return error.ResourceAlreadyExists;
-    try self.map.put(self.allocator, id, .{
-        .ptr = ptr,
-        .destroyFn = struct {
-            fn noop(_: std.mem.Allocator, _: *anyopaque) void {}
-        }.noop,
-    });
-}
-
-/// Immutable access. Returns null if resource not found.
-pub fn get(self: *ResourcePool, comptime T: type) ?*const T {
-    self.lock();
-    defer self.unlock();
-
-    const entry = self.map.get(typeIdInt(T)) orelse return null;
-    return @as(*const T, @ptrCast(@alignCast(entry.ptr)));
-}
-
-/// Mutable access. Returns null if resource not found.
-pub fn getMut(self: *ResourcePool, comptime T: type) ?*T {
-    self.lock();
-    defer self.unlock();
-
-    const entry = self.map.get(typeIdInt(T)) orelse return null;
-    return @as(*T, @ptrCast(@alignCast(entry.ptr)));
-}
-
-pub fn has(self: *ResourcePool, comptime T: type) bool {
-    self.lock();
-    defer self.unlock();
-    return self.map.contains(typeIdInt(T));
-}
-
-fn makeDestroyFn(comptime T: type) *const fn (std.mem.Allocator, *anyopaque) void {
+fn destroyer(comptime T: type) *const fn (Allocator, *anyopaque) void {
     return struct {
-        fn destroy(allocator: std.mem.Allocator, raw: *anyopaque) void {
+        fn destroy(gpa: Allocator, raw: *anyopaque) void {
             const typed: *T = @ptrCast(@alignCast(raw));
-            if (@hasDecl(T, "deinit")) {
-                typed.deinit();
-            }
-            allocator.destroy(typed);
+            deinitValue(T, typed, gpa);
+            gpa.destroy(typed);
         }
     }.destroy;
+}
+
+/// Calls `T.deinit`, if it has one taking nothing or an allocator; the
+/// allocator given is the world's.
+fn deinitValue(comptime T: type, value: *T, gpa: Allocator) void {
+    switch (@typeInfo(T)) {
+        .@"struct", .@"union", .@"enum", .@"opaque" => {},
+        else => return,
+    }
+    if (!@hasDecl(T, "deinit")) return;
+    const Fn = @TypeOf(T.deinit);
+    if (@typeInfo(Fn) != .@"fn") return;
+    const params = @typeInfo(Fn).@"fn".params;
+    if (params.len == 1) {
+        value.deinit();
+    } else if (params.len == 2 and params[1].type == Allocator) {
+        value.deinit(gpa);
+    }
 }
