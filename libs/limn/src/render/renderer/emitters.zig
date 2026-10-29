@@ -1,0 +1,130 @@
+//! Particle emitters. Internal to the renderer.
+const std = @import("std");
+const handle = @import("../../handle.zig");
+const renderer_state = @import("../state.zig");
+const rhi = @import("../../rhi/rhi.zig");
+const gpu = @import("../gpu.zig");
+const api = @import("../api.zig");
+const render = @import("../renderer.zig");
+
+const Renderer = render.Renderer;
+const Scene = api.Scene;
+const Emitter = api.Emitter;
+const max_trail_points = api.max_trail_points;
+const EmitterDesc = api.EmitterDesc;
+
+/// Particle emitters.
+pub const Emitters = struct {
+    internal: Internal,
+
+    /// Not part of the API.
+    pub const Internal = struct {
+        table: handle.HandleTable(renderer_state.EmitterData, api.EmitterTag),
+
+        /// Frees what one of them holds, as when the renderer is destroyed.
+        pub fn free(owner: *Renderer, entry: *renderer_state.EmitterData) void {
+            owner.device.destroyBuffer(entry.buffer);
+            if (entry.order) |order| owner.device.destroyBuffer(order);
+            if (entry.trail) |trail| owner.device.destroyBuffer(trail);
+        }
+    };
+
+    fn renderer(emitters: *Emitters) *Renderer {
+        return @alignCast(@fieldParentPtr("emitters", emitters));
+    }
+
+    /// Adds a GPU-simulated particle emitter to a scene.
+    pub fn create(emitters: *Emitters, scene: Scene, desc: EmitterDesc) !Emitter {
+        const self = emitters.renderer();
+        self.lock();
+        defer self.unlock();
+        return createEmitterLocked(self, scene, desc);
+    }
+
+    /// For tests: a sorted emitter's sort keys in drawing order (smaller is
+    /// farther; dead slots come last). Waits for the GPU. Caller frees.
+    pub fn sortKeys(emitters: *Emitters, gpa: std.mem.Allocator, emitter: Emitter) ![]f32 {
+        const self = emitters.renderer();
+        self.lock();
+        defer self.unlock();
+        const data = self.emitters.internal.table.get(emitter) orelse return error.InvalidEmitter;
+        const order = data.order orelse return error.EmitterNotSorted;
+        const bytes = try self.device.readBuffer(gpa, order, @as(u64, data.order_count) * 8);
+        defer gpa.free(bytes);
+        const keys = try gpa.alloc(f32, data.order_count);
+        for (keys, 0..) |*key, index| key.* = @bitCast(std.mem.readInt(u32, bytes[index * 8 ..][0..4], .little));
+        return keys;
+    }
+
+    /// Replaces an emitter's description; `capacity` is ignored.
+    pub fn set(emitters: *Emitters, emitter: Emitter, desc: EmitterDesc) void {
+        const self = emitters.renderer();
+        self.lock();
+        defer self.unlock();
+        if (self.emitters.internal.table.get(emitter)) |data| data.desc = desc;
+    }
+
+    /// Adds `count` births at once, on top of `rate`, at the emitter's
+    /// position when it is next simulated. A stale handle is ignored.
+    pub fn burst(emitters: *Emitters, emitter: Emitter, count: u32) void {
+        const self = emitters.renderer();
+        self.lock();
+        defer self.unlock();
+        if (self.emitters.internal.table.get(emitter)) |data| data.pending += @floatFromInt(count);
+    }
+
+    /// Live particles vanish at once. A stale handle is ignored.
+    pub fn destroy(emitters: *Emitters, emitter: Emitter) void {
+        const self = emitters.renderer();
+        self.lock();
+        defer self.unlock();
+        destroyEmitterLocked(self, emitter);
+    }
+};
+
+/// `emitters.create` for a caller that holds the renderer's lock.
+pub fn createEmitterLocked(self: *Renderer, scene: Scene, desc: EmitterDesc) !Emitter {
+    const data = self.scenes.internal.table.get(scene) orelse return error.InvalidScene;
+    const capacity = std.math.clamp(desc.capacity, 1, 1 << 20);
+    const buffer = try self.device.createBuffer(.{
+        .name = "particles",
+        .size = @as(u64, capacity) * @sizeOf(gpu.Particle),
+        .usage = .{ .storage = true },
+    });
+    errdefer self.device.destroyBuffer(buffer);
+    const zeros = try self.internal.gpa.alloc(u8, capacity * @sizeOf(gpu.Particle));
+    defer self.internal.gpa.free(zeros);
+    @memset(zeros, 0);
+    try self.device.uploadBuffer(buffer, 0, zeros);
+    const order_count = std.math.ceilPowerOfTwo(u32, capacity) catch capacity;
+    const order: ?rhi.Buffer = if (desc.sorted) try self.device.createBuffer(.{
+        .name = "particle order",
+        .size = @as(u64, order_count) * 8,
+        .usage = .{ .storage = true, .copy_src = true },
+    }) else null;
+    errdefer if (order) |value| self.device.destroyBuffer(value);
+    const trail_points = @min(desc.trail, max_trail_points);
+    const trail: ?rhi.Buffer = if (trail_points != 0) try self.device.createBuffer(.{
+        .name = "particle trails",
+        .size = @as(u64, capacity) * trail_points * 16,
+        .usage = .{ .storage = true },
+    }) else null;
+    errdefer if (trail) |value| self.device.destroyBuffer(value);
+    const emitter = try self.emitters.internal.table.insert(.{ .scene = scene, .desc = desc, .buffer = buffer, .capacity = capacity, .order = order, .order_count = order_count, .trail = trail, .trail_points = trail_points });
+    errdefer _ = self.emitters.internal.table.remove(emitter);
+    try data.emitters.append(self.internal.gpa, emitter);
+    return emitter;
+}
+
+/// `emitters.destroy` for a caller that holds the renderer's lock.
+pub fn destroyEmitterLocked(self: *Renderer, emitter: Emitter) void {
+    const removed = self.emitters.internal.table.remove(emitter) orelse return;
+    self.device.destroyBuffer(removed.buffer);
+    if (removed.order) |order| self.device.destroyBuffer(order);
+    if (removed.trail) |trail| self.device.destroyBuffer(trail);
+    const scene = self.scenes.internal.table.get(removed.scene) orelse return;
+    for (scene.emitters.items, 0..) |item, index| if (std.meta.eql(item, emitter)) {
+        _ = scene.emitters.swapRemove(index);
+        break;
+    };
+}

@@ -1,0 +1,242 @@
+//! State and results shared between the passes of one view of a scene.
+//! Internal to the renderer.
+const cull_push = @import("shaders/push/cull.zig");
+const visibility_push = @import("shaders/push/visibility.zig");
+const std = @import("std");
+const rhi = @import("../rhi/rhi.zig");
+const math = @import("../math.zig");
+const gpu = @import("gpu.zig");
+const render = @import("renderer.zig");
+
+const Mat4 = math.Mat4;
+const Vec3 = math.Vec3;
+const Scene = render.Scene;
+const Settings = render.Settings;
+const ViewDesc = render.ViewDesc;
+const FrameArena = render.FrameArena;
+const SceneData = render.SceneData;
+const ViewData = render.ViewData;
+const ViewState = render.ViewState;
+const Cascades = render.Cascades;
+const max_local_shadow_views = render.max_local_shadow_views;
+
+/// This frame's changes to a scene's instance records, last frame's
+/// transforms and ray-tracing instances, staged in the frame arena.
+pub const SceneUpdate = struct {
+    /// Every entity record is staged, to be copied whole.
+    whole: bool,
+    records: Staged = .{},
+    previous: Staged = .{},
+    tlas: Staged = .{},
+    entity_count: u32 = 0,
+    rigid_tlas: u32 = 0,
+    /// Addresses and counts of `InstanceMove` and `InstanceRewrite` lists.
+    moves: u64 = 0,
+    move_count: u32 = 0,
+    rewrites: u64 = 0,
+    rewrite_count: u32 = 0,
+    /// Ray-tracing instances of skinned meshes and where they go.
+    skinned_tlas: Staged = .{},
+    skinned_tlas_count: u32 = 0,
+    skinned_tlas_first: u32 = 0,
+
+    pub const Staged = struct { buffer: rhi.Buffer = undefined, offset: u64 = 0 };
+};
+
+/// What `prepareScene` leaves for the views that draw a scene this frame.
+pub const SceneFrame = struct {
+    instances: u64,
+    /// See `gpu.FrameConstants.previous_transforms`.
+    previous_transforms: u64,
+    /// What `applySceneUpdate` has to do on the GPU.
+    update: SceneUpdate,
+    joints: u64,
+    skinned_vertices: u32,
+    any_moving: bool,
+    /// Ray-tracing instances for the static geometry, and its bounds.
+    tlas_instances: u64,
+    tlas_count: u32,
+    tlas_hash: u64,
+    /// Address and count of the `Glowing` records in the frame arena, for
+    /// path tracing to sample.
+    glowing: u64,
+    glowing_count: u32,
+    bounds: [2]Vec3,
+};
+
+/// What `Shared` holds until the feature that provides a value sets it: no
+/// sun shadows, lights or local shadows.
+pub const no_sun = SunShadows{ .enabled = false, .colored = false, .map = rhi.Texture.invalid, .cascades = std.mem.zeroes(Cascades), .count = 0, .update = @splat(false) };
+pub const no_lighting = Lighting{ .lights = 0, .tiles = 0, .light_count = 0, .tile_count = 0, .tile_view_proj = std.mem.zeroes([max_local_shadow_views]Mat4), .tile_views = std.mem.zeroes([max_local_shadow_views]gpu.CullView) };
+pub const no_local_shadows = LocalShadows{ .draw = false, .same_atlas = false, .key = 0, .tile_dirty = @splat(false) };
+
+/// What the features of one view of a scene hand each other while its frame
+/// is put together and drawn.
+/// Values a feature's `prepare` sets for later ones are named by its
+/// `provides`; a feature whose `prepare` reads one names it in `uses`, and
+/// `core/features.zig` checks that an earlier feature provides it.
+pub const Shared = struct {
+    frame: rhi.Frame,
+    arena: *FrameArena,
+    delta_time: f32,
+    sun: *const SunShadows,
+    lighting: *const Lighting,
+    local_shadows: *const LocalShadows,
+    gi: ?*render.GiVolume,
+    shadow_tlas: u64,
+    colored_shadows: bool,
+    cloud_address: u64,
+    fluid_list: *gpu.FluidList,
+    shadows_enabled: bool,
+    first_view: bool,
+    fresh_scene: bool,
+    instance_total: u32,
+    count_readback: rhi.Buffer,
+    culling: *CullState,
+    reflections: ?render.ReflectionTargets = null,
+    path_traced: bool = false,
+    resolved: *rhi.Texture,
+    bloom_count: usize = 0,
+    /// The pick this view answers, taken from the renderer while it is planned.
+    pick: ?@import("state.zig").PickRequest = null,
+};
+
+/// State shared by the passes of one view of a scene.
+pub const ScenePass = struct {
+    frame: rhi.Frame,
+    cmd: *rhi.CommandEncoder,
+    arena: *FrameArena,
+    desc: ViewDesc,
+    /// `desc.settings` with implied settings filled in.
+    settings: Settings,
+    scene_handle: Scene,
+    scene: *SceneData,
+    scene_frame: SceneFrame,
+    /// True for the first view to draw the scene this frame, which also does
+    /// the per-scene work.
+    fresh_scene: bool,
+    /// True for the view that rebuilds the scene's ray tracing structure
+    /// this frame (`ray_scene.claim`).
+    builds_ray_scene: bool = false,
+    view_data: *ViewData,
+    view: *ViewState,
+    /// Size the scene is rendered at.
+    width: u32,
+    height: u32,
+    /// Size of the picture once antialiasing has resolved it: the output
+    /// size when that also upscales.
+    resolved_width: u32,
+    resolved_height: u32,
+    /// Size of the area of the target the view fills.
+    output_width: u32,
+    output_height: u32,
+    /// The view covers the whole backbuffer.
+    fills_backbuffer: bool = false,
+    delta_time: f32,
+    /// A debug view is shown: effects that would hide it are left out.
+    debugging: bool,
+    aspect: f32,
+    view_matrix: Mat4,
+    proj_unjittered: Mat4,
+    /// This frame's subpixel jitter, as a fraction of the picture.
+    jitter: [2]f32 = .{ 0, 0 },
+    view_proj: Mat4,
+    view_proj_unjittered: Mat4,
+    /// Direction the sun's light travels, normalized.
+    sun_travel: Vec3,
+    /// The scene has meshlets to draw.
+    has_geometry: bool,
+    occlusion: bool,
+    /// Culling records which instances the camera draws.
+    mark_seen: bool,
+    /// Camera position (xyz) and LOD selection scale (w) for the camera pass.
+    lod: [4]f32,
+    /// Width of the LOD cross-fade band.
+    lod_band: f32,
+    /// Address of the frame constants; 0 until they have been written.
+    frame_address: u64 = 0,
+    /// The view is path traced: passes whose result the tracer replaces are
+    /// left out.
+    tracing: bool = false,
+    shared: *Shared = undefined,
+    /// The sun casts shadows in this view.
+    sun_shadows: bool = false,
+    /// What culling leaves for the passes after it; filled when it runs.
+    culling: *const CullState = undefined,
+    /// The antialiased HDR picture, once the resolve stage has run.
+    resolved: *const rhi.Texture = undefined,
+
+    /// A color target the view keeps from frame to frame, made when first
+    /// asked for and dropped a few frames after it no longer is.
+    pub fn keep(p: *const ScenePass, renderer: *render.Renderer, name: [:0]const u8, width: u32, height: u32, format: rhi.Format) !rhi.Texture {
+        return p.keepAs(renderer, .{ .name = name, .width = width, .height = height, .format = format, .usage = .{ .sampled = true, .color_attachment = true } });
+    }
+
+    pub fn keepAs(p: *const ScenePass, renderer: *render.Renderer, desc: rhi.TextureDesc) !rhi.Texture {
+        return p.view_data.kept.single(renderer.internal.gpa, renderer.device, desc, renderer.internal.frame_index);
+    }
+
+    /// `size` at an effect's fraction of the view's resolution.
+    pub fn scaled(resolution: render.EffectResolution, size: u32) u32 {
+        return @max(size >> @intFromEnum(resolution), 1);
+    }
+};
+
+/// The sun's shadow cascades for one view of a frame.
+pub const SunShadows = struct {
+    enabled: bool,
+    /// See-through casters tint the light that passes them.
+    colored: bool,
+    map: rhi.Texture,
+    cascades: Cascades,
+    /// Cascades in use.
+    count: u32,
+    /// Cascades redrawn this frame.
+    update: [gpu.cascade_count]bool,
+};
+
+/// Result of `updateCascades`.
+pub const CascadePlan = struct { count: u32, update: [gpu.cascade_count]bool };
+
+/// What is redrawn of the local lights' shadow atlas for one view.
+pub const LocalShadows = struct {
+    draw: bool,
+    /// The atlas holds the same lights in the same tiles as when last drawn,
+    /// so unchanged tiles are kept.
+    same_atlas: bool,
+    key: u64,
+    tile_dirty: [max_local_shadow_views]bool,
+};
+
+/// A frame's reflection probes as the shaders read them.
+pub const ProbeList = struct { address: u64, count: u32 };
+
+/// What the first round of culling leaves for later passes.
+pub const CullState = struct {
+    push: CullPush,
+    /// Address of the frame's `gpu.CullView` records.
+    views: u64,
+    /// Cascades that leave out casters whose shadows the camera cannot see.
+    receiver_culled: [gpu.cascade_count]bool,
+};
+
+pub const DrawPush = visibility_push.GeometryPush;
+
+pub const CullPush = cull_push.MeshletPush;
+
+pub const InstanceCullPush = cull_push.InstancePush;
+
+/// A view's lights as the shaders read them and the shadow tiles assigned
+/// to them; made by `prepareLights`.
+pub const Lighting = struct {
+    lights: u64,
+    /// The same records, as the CPU wrote them this frame.
+    records: []const gpu.Light = &.{},
+    tiles: u64,
+    light_count: u32,
+    /// Hash of which lights were given shadow tiles.
+    tiles_key: u64 = 0,
+    tile_count: u32,
+    tile_view_proj: [max_local_shadow_views]Mat4,
+    tile_views: [max_local_shadow_views]gpu.CullView,
+};

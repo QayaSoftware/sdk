@@ -1,0 +1,492 @@
+//! Geometry and texture streaming: what each frame keeps resident. Internal to the renderer.
+const std = @import("std");
+const geometry_feature = @import("../features/geometry.zig");
+const rhi = @import("../../rhi/rhi.zig");
+const math = @import("../../math.zig");
+const gpu = @import("../gpu.zig");
+const api = @import("../api.zig");
+const renderer_state = @import("../state.zig");
+const render = @import("../renderer.zig");
+const markOf = @import("entity_edits.zig").markOf;
+const transformOf = @import("entity_edits.zig").transformOf;
+
+const Renderer = render.Renderer;
+const Mat4 = math.Mat4;
+const Vec3 = math.Vec3;
+const StreamFrustum = renderer_state.StreamFrustum;
+const TextureStream = renderer_state.TextureStream;
+const StreamPart = renderer_state.StreamPart;
+const Zone = renderer_state.Zone;
+const Camera = api.Camera;
+const FrameDesc = api.FrameDesc;
+const ModelMesh = renderer_state.ModelMesh;
+const ModelEntry = renderer_state.ModelEntry;
+const SceneData = renderer_state.SceneData;
+const encodeMaterial = @import("materials.zig").encodeMaterial;
+
+/// Releases geometry of models far from every camera and restores it for
+/// near ones.
+pub fn updateGeometryStreaming(self: *Renderer, desc: FrameDesc) !void {
+    const streaming = self.options.geometry.streaming orelse return;
+    const near_enough = if (streaming.coarse_distance > 0) @min(streaming.distance, streaming.coarse_distance * 0.9) else streaming.distance;
+    const zone = Zone.start(self.options.profiler, "geometry streaming");
+    defer zone.stop();
+    for (0..self.models.internal.table.slotCount()) |slot_index| if (self.models.internal.table.slotAt(slot_index).value) |*entry| {
+        entry.stream_distance = std.math.inf(f32);
+    };
+    for (desc.views) |view_desc| {
+        const scene = self.scenes.internal.table.get(view_desc.scene orelse continue) orelse continue;
+        const eye = view_desc.camera.position;
+        for (scene.entities.items) |item| {
+            const entity = self.entities.internal.table.get(item) orelse continue;
+            if (!entity.visible) continue;
+            const model = self.models.internal.table.get(entity.model) orelse continue;
+            if (model.state != .ready) continue;
+            const center = math.transformPoint(transformOf(self, item), model.info.bounds_center);
+            const radius = model.info.bounds_radius * math.maxScale(transformOf(self, item));
+            model.stream_distance = @min(model.stream_distance, @max(math.length(math.sub(center, eye)) - radius, 0));
+        }
+        for (scene.groups.items) |item| {
+            const group = self.instances.internal.table.get(item) orelse continue;
+            const model = self.models.internal.table.get(group.model) orelse continue;
+            if (model.state != .ready) continue;
+            for (group.transforms) |transform| {
+                if (model.stream_distance < near_enough) break;
+                const center = math.transformPoint(transform, model.info.bounds_center);
+                const radius = model.info.bounds_radius * math.maxScale(transform);
+                model.stream_distance = @min(model.stream_distance, @max(math.length(math.sub(center, eye)) - radius, 0));
+            }
+        }
+    }
+
+    var changed = false;
+    var budget = streaming.upload_bytes_per_frame;
+    var released: u32 = 0;
+    var released_bytes: u64 = 0;
+    var coarse_models: u32 = 0;
+    for (0..self.models.internal.table.slotCount()) |slot_index| if (self.models.internal.table.slotAt(slot_index).value) |*entry| {
+        if (entry.state != .ready) continue;
+        const source = &entry.source.?;
+        var bytes: u64 = 0;
+        for (entry.meshes) |mesh| bytes += @as(u64, mesh.vertex_count) * @sizeOf(gpu.Vertex) + @as(u64, mesh.index_count) * @sizeOf(u32);
+        if (entry.geometry_resident) {
+            if (source.skins.len != 0 or entry.geometry_pinned or entry.blas_pending) continue;
+            const far = entry.stream_distance != std.math.inf(f32) and entry.stream_distance > streaming.distance * @max(streaming.release_factor, 1);
+            if (!far) {
+                const coarse_wanted = streaming.coarse_distance > 0 and entry.stream_distance != std.math.inf(f32) and entry.stream_distance > streaming.coarse_distance;
+                if (coarse_wanted and !entry.geometry_coarse) {
+                    if (keepCoarse(self, entry)) changed = true;
+                } else if (entry.geometry_coarse and entry.stream_distance < streaming.coarse_distance * 0.9 and bytes <= budget) {
+                    for (entry.meshes) |*mesh| freeMeshGeometry(self, mesh);
+                    entry.geometry_resident = false;
+                    entry.geometry_coarse = false;
+                    budget -|= bytes;
+                    try restoreGeometry(self, entry);
+                    changed = true;
+                }
+                if (entry.geometry_coarse) coarse_models += 1;
+                continue;
+            }
+            for (entry.meshes) |*mesh| {
+                freeMeshGeometry(self, mesh);
+                if (mesh.blas) |blas| self.device.destroyAcceleration(blas);
+                mesh.blas = null;
+            }
+            entry.geometry_resident = false;
+            entry.geometry_coarse = false;
+            changed = true;
+        } else if (entry.geometry_pinned or entry.stream_distance < streaming.distance) {
+            if (bytes > budget and budget != streaming.upload_bytes_per_frame) {
+                released += 1;
+                released_bytes += bytes;
+                continue;
+            }
+            budget -|= bytes;
+            try restoreGeometry(self, entry);
+            changed = true;
+        }
+        if (!entry.geometry_resident) {
+            released += 1;
+            released_bytes += bytes;
+        }
+    };
+    self.internal.stats.geometry_models_released = released;
+    self.internal.stats.geometry_bytes_released = released_bytes;
+    self.internal.stats.geometry_models_coarse = coarse_models;
+    if (changed) for (0..self.scenes.internal.table.slotCount()) |slot_index| if (self.scenes.internal.table.slotAt(slot_index).value) |*scene| {
+        scene.layout_dirty = true;
+    };
+}
+
+/// Frees a mesh's vertex and index pool ranges, whole or coarse.
+pub fn freeMeshGeometry(self: *Renderer, mesh: *ModelMesh) void {
+    if (mesh.coarse) {
+        self.internal.vertices.free(self, mesh.vertex_offset, mesh.coarse_vertex_count);
+        self.internal.indices.free(self, mesh.index_offset + mesh.lod0_index_count, mesh.index_count - mesh.lod0_index_count);
+        mesh.coarse = false;
+    } else {
+        self.internal.vertices.free(self, mesh.vertex_offset, mesh.vertex_count);
+        self.internal.indices.free(self, mesh.index_offset, mesh.index_count);
+    }
+}
+
+/// Frees the vertices and indices only the finest LOD uses, for every
+/// mesh that can be split. Returns whether anything was freed.
+fn keepCoarse(self: *Renderer, entry: *ModelEntry) bool {
+    var any = false;
+    for (entry.meshes) |*mesh| {
+        if (mesh.coarse or mesh.coarse_vertex_count == 0 or mesh.bvh_nodes != null or mesh.skin_offset != null) continue;
+        self.internal.vertices.free(self, mesh.vertex_offset + mesh.coarse_vertex_count, mesh.vertex_count - mesh.coarse_vertex_count);
+        self.internal.indices.free(self, mesh.index_offset, mesh.lod0_index_count);
+        if (mesh.blas) |blas| self.device.destroyAcceleration(blas);
+        mesh.blas = null;
+        mesh.coarse = true;
+        any = true;
+    }
+    if (any) entry.geometry_coarse = true;
+    return any;
+}
+
+/// Restores a released model's geometry from the copy in system memory.
+fn restoreGeometry(self: *Renderer, entry: *ModelEntry) !void {
+    const device = self.device;
+    const source = &entry.source.?;
+    const records = try self.internal.gpa.alloc(gpu.Mesh, entry.meshes.len);
+    defer self.internal.gpa.free(records);
+    var reserved: usize = 0;
+    errdefer for (entry.meshes[0..reserved]) |mesh| {
+        self.internal.vertices.free(self, mesh.vertex_offset, mesh.vertex_count);
+        self.internal.indices.free(self, mesh.index_offset, mesh.index_count);
+    };
+    for (entry.meshes) |*mesh| {
+        const vertex_offset = try self.internal.vertices.alloc(self, mesh.vertex_count);
+        mesh.index_offset = self.internal.indices.alloc(self, mesh.index_count) catch |err| {
+            self.internal.vertices.free(self, vertex_offset, mesh.vertex_count);
+            return err;
+        };
+        mesh.vertex_offset = vertex_offset;
+        reserved += 1;
+    }
+    for (source.meshes, entry.meshes, records) |mesh, placed, *record| {
+        try self.internal.vertices.write(device, placed.vertex_offset, std.mem.sliceAsBytes(mesh.vertices));
+        try self.internal.indices.write(device, placed.index_offset, std.mem.sliceAsBytes(mesh.indices));
+        record.* = .{
+            .center = mesh.bounds_center,
+            .radius = mesh.bounds_radius,
+            .index_offset = placed.index_offset,
+            .meshlet_offset = placed.meshlet_offset,
+            .meshlet_count = placed.meshlet_count,
+            .bvh = placed.bvh_nodes orelse gpu.invalid_id,
+        };
+    }
+    try self.internal.meshes.write(device, entry.mesh_base, std.mem.sliceAsBytes(records));
+    if (device.caps.ray_tracing) {
+        for (entry.meshes) |*mesh| {
+            if (mesh.skin_offset != null) continue;
+            const made = try device.createBlas(.{ .geometries = &.{geometry_feature.blasGeometry(self, mesh.*)} });
+            if (device.detached_queue != null) mesh.blas_building = made else mesh.blas = made;
+        }
+        entry.blas_pending = true;
+        self.internal.rays.blas_pending += 1;
+    }
+    entry.geometry_resident = true;
+}
+
+pub fn createStreamTexture(self: *Renderer, stream: *const TextureStream, wanted_first: u32) !rhi.Texture {
+    const device = self.device;
+    var first = wanted_first;
+    var from_file: []u8 = &.{};
+    defer self.internal.gpa.free(from_file);
+    const file_start = stream.levelOffset(first);
+    if (file_start < stream.tail_offset) {
+        if (readStreamLevels(self, stream, file_start, stream.tail_offset - file_start)) |bytes| {
+            from_file = bytes;
+        } else |err| {
+            std.log.warn("texture streaming: could not read {s}: {s}", .{ stream.path, @errorName(err) });
+            first = stream.floor;
+        }
+    }
+    const texture = try device.createTexture(.{
+        .name = "material texture",
+        .width = @max(stream.width >> @intCast(first), 1),
+        .height = @max(stream.height >> @intCast(first), 1),
+        .format = stream.format(),
+        .usage = .{ .sampled = true, .copy_dst = true },
+        .mip_levels = stream.levels - first,
+    });
+    errdefer device.destroyTexture(texture);
+    var offset = stream.levelOffset(first);
+    for (first..stream.levels) |level| {
+        const size = stream.levelSize(@intCast(level));
+        const bytes = if (offset < stream.tail_offset) from_file[offset - file_start ..][0..size] else stream.data[offset - stream.tail_offset ..][0..size];
+        try device.uploadTexture(texture, @intCast(level - first), 0, bytes);
+        offset += size;
+    }
+    return texture;
+}
+
+/// Reads part of a texture's mip chain from its asset cache file (12-byte
+/// header, then the chain). Caller frees.
+fn readStreamLevels(self: *Renderer, stream: *const TextureStream, offset: usize, size: usize) ![]u8 {
+    const file = try std.Io.Dir.cwd().openFile(self.internal.io, stream.path, .{});
+    defer file.close(self.internal.io);
+    const bytes = try self.internal.gpa.alloc(u8, size);
+    errdefer self.internal.gpa.free(bytes);
+    if (try file.readPositionalAll(self.internal.io, bytes, 12 + offset) != size) return error.EndOfStream;
+    return bytes;
+}
+
+/// Builds what `wantPart` reads of each mesh of a ready model, once.
+fn streamParts(self: *Renderer, model: *ModelEntry) ![]const StreamPart {
+    const source = &model.source.?;
+    if (model.stream_parts.len == source.instances.len) return model.stream_parts;
+    const parts = try self.internal.gpa.alloc(StreamPart, source.instances.len);
+    for (parts, source.instances) |*part, instance| {
+        const mesh = &source.meshes[instance.mesh];
+        const material = &source.materials[mesh.material];
+        part.* = .{
+            .density = mesh.uv_density * @max(@abs(material.uv_scale[0]), @abs(material.uv_scale[1])),
+            .center = mesh.bounds_center,
+            .radius = mesh.bounds_radius,
+            .node = if (instance.skin != null) null else instance.node,
+        };
+        inline for (.{ "base_color_texture", "normal_texture", "metallic_roughness_texture", "occlusion_texture", "emissive_texture" }, 0..) |field, slot| {
+            if (@field(material, field)) |ref| if (model.streams[ref.image].data.len != 0) {
+                const stream = model.streams[ref.image];
+                part.streams[slot] = ref.image;
+                part.log_sizes[slot] = @log2(@as(f32, @floatFromInt(@max(stream.width, stream.height, 1))));
+            };
+        }
+    }
+    model.stream_parts = parts;
+    return parts;
+}
+
+const StreamView = struct {
+    camera: Camera,
+    pixels_at_one_meter: f32,
+    bias: f32,
+    frustum: ?StreamFrustum,
+};
+
+/// Lowers the wanted mip level of each texture one mesh of a model uses,
+/// for a copy with the given world-space bounds and scale.
+fn wantPart(model: *ModelEntry, part: StreamPart, center: Vec3, radius: f32, scale: f32, view: StreamView) void {
+    if (part.density <= 0) return;
+    const distance = if (view.camera.orthographic != null) 1 else @max(math.length(math.sub(center, view.camera.position)) - radius, view.camera.near);
+    if (view.frustum) |seen| if (!seen.touches(center, radius)) return;
+    const level_base = @log2(@max(part.density / @max(scale, 1e-6) * distance / view.pixels_at_one_meter, 1e-12)) + view.bias;
+    for (part.streams, part.log_sizes) |index, log_size| {
+        if (index == gpu.invalid_id) continue;
+        const stream = &model.streams[index];
+        if (stream.wanted == 0) continue;
+        const level = level_base + log_size;
+        const wanted: u32 = if (!(level > 0)) 0 else if (level >= @as(f32, @floatFromInt(stream.floor))) stream.floor else @intFromFloat(level);
+        stream.wanted = @min(stream.wanted, wanted);
+    }
+}
+
+/// `wantPart` for every mesh of one copy of a model.
+fn wantModelTextures(
+    model: *ModelEntry,
+    parts: []const StreamPart,
+    transform: Mat4,
+    view: StreamView,
+    /// Per mesh, whether a camera drew it; null asks for all.
+    drawn: ?[]const u32,
+) void {
+    for (parts, 0..) |part, index| {
+        if (drawn) |seen| if (seen[index] == 0) continue;
+        if (part.density <= 0) continue;
+        const world = if (part.node) |node| math.mul(transform, model.node_world[node]) else transform;
+        const scale = @max(math.maxScale(world), 1e-6);
+        wantPart(model, part, math.transformPoint(world, part.center), part.radius * scale, scale, view);
+    }
+}
+
+/// Instances a camera drew a few frames ago; null when not known (no
+/// readback yet, or the scene's layout changed since).
+/// Texture bytes that keep the process under 90% of the memory budget the
+/// driver reports, given `resident_bytes` of textures now; 0 when it reports none.
+fn driverBudget(device: *rhi.Device, resident_bytes: u64) u64 {
+    const memory = device.memoryStats();
+    if (memory.budget_bytes == 0) return 0;
+    return @max((memory.budget_bytes / 10 * 9 -| memory.process_bytes) + resident_bytes, 1);
+}
+
+fn seenInstances(device: *rhi.Device, scene: *const SceneData, frame: rhi.Frame) ?[]const u32 {
+    if (scene.layout_dirty) return null;
+    const slot: usize = @intCast(frame.index % rhi.frames_in_flight);
+    const tag = scene.seen_tags[slot];
+    const buffer = scene.seen_readback[slot] orelse return null;
+    if (!tag.valid or tag.layout_version != scene.layout_version) return null;
+    return device.mappedSlice(u32, buffer)[0..tag.count];
+}
+
+/// Decides which mip levels the frame's views need, fits them to the
+/// budget, and loads or drops levels to match.
+pub fn updateTextureStreaming(self: *Renderer, frame: rhi.Frame, desc: FrameDesc) !void {
+    const streaming = self.options.textures.streaming orelse return;
+    const zone = Zone.start(self.options.profiler, "texture streaming");
+    defer zone.stop();
+    const device = self.device;
+    for (0..self.models.internal.table.slotCount()) |slot_index| if (self.models.internal.table.slotAt(slot_index).value) |*entry| {
+        for (entry.streams) |*stream| stream.wanted = stream.floor;
+    };
+    for (desc.views) |view_desc| {
+        const scene = self.scenes.internal.table.get(view_desc.scene orelse continue) orelse continue;
+        const target = switch (view_desc.target) {
+            .backbuffer => frame.backbuffer orelse continue,
+            .texture => |texture| texture,
+        };
+        if (!device.textureExists(target)) continue;
+        const height = if (view_desc.region) |region| region.height else device.textureInfo(target).height;
+        const camera = view_desc.camera;
+        const lens_reach = if (camera.orthographic) |parallel| @max(parallel.height, 1e-6) * 0.5 else @tan(camera.fov_y * 0.5);
+        const pixels_at_one_meter = @as(f32, @floatFromInt(height)) * 0.5 / lens_reach *
+            std.math.clamp(view_desc.settings.resolution.scale, 0.25, 1);
+        const bias = streaming.mip_bias + view_desc.settings.resolution.texture_mip_bias;
+        const frustum: ?StreamFrustum = if (streaming.visible_only and camera.orthographic == null) blk: {
+            const info = device.textureInfo(target);
+            const width = if (view_desc.region) |region| region.width else info.width;
+            const tan_y = @tan(camera.fov_y * 0.5);
+            break :blk .{
+                .view = math.lookTo(camera.position, camera.forward, camera.up),
+                .tan_x = tan_y * @as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(height)),
+                .tan_y = tan_y,
+            };
+        } else null;
+        const seen: ?[]const u32 = if (streaming.skip_occluded) seenInstances(device, scene, frame) else null;
+        const view = StreamView{ .camera = camera, .pixels_at_one_meter = pixels_at_one_meter, .bias = bias, .frustum = frustum };
+        const laid_out = scene.records_valid and !scene.layout_dirty and scene.layout_generation == self.internal.asset_generation;
+        self.internal.seen_round += 1;
+        if (seen != null) for (scene.layout.items, 0..) |placed, index| {
+            if (!placed.first_of_entity) continue;
+            const entity = self.entities.internal.table.get(placed.entity) orelse continue;
+            entity.seen_round = self.internal.seen_round;
+            entity.seen_first = @intCast(index);
+        };
+        for (scene.entities.items) |item| {
+            const entity = self.entities.internal.table.get(item) orelse continue;
+            if (!entity.visible) continue;
+            const model = self.models.internal.table.get(entity.model) orelse continue;
+            if (model.state != .ready or model.streamed == 0) continue;
+            const parts: ?[]const u32 = if (seen) |drawn| blk: {
+                if (entity.seen_round != self.internal.seen_round) continue;
+                const count = model.source.?.instances.len;
+                if (entity.seen_first + count > drawn.len) continue;
+                break :blk drawn[entity.seen_first..][0..count];
+            } else null;
+            const model_parts = try streamParts(self, model);
+            const mark = markOf(self, item) orelse continue;
+            if (!laid_out or mark.layout_count != model_parts.len) {
+                wantModelTextures(model, model_parts, transformOf(self, item), view, parts);
+                continue;
+            }
+            for (model_parts, scene.spheres.items[mark.layout_first..][0..mark.layout_count], 0..) |part, sphere, index| {
+                if (parts) |drawn| if (drawn[index] == 0) continue;
+                if (part.node != null and part.radius > 0) {
+                    wantPart(model, part, sphere[0..3].*, sphere[3], sphere[3] / part.radius, view);
+                    continue;
+                }
+                const world = transformOf(self, item);
+                const scale = @max(math.maxScale(world), 1e-6);
+                wantPart(model, part, math.transformPoint(world, part.center), part.radius * scale, scale, view);
+            }
+        }
+        for (scene.groups.items) |item| {
+            const group = self.instances.internal.table.get(item) orelse continue;
+            const model = self.models.internal.table.get(group.model) orelse continue;
+            if (model.state != .ready or model.streamed == 0 or group.transforms.len == 0) continue;
+            var nearest: ?usize = null;
+            var nearest_distance = std.math.inf(f32);
+            for (group.transforms, 0..) |transform, index| {
+                if (seen) |drawn| {
+                    const first = group.base + @as(u32, @intCast(index)) * group.per_copy;
+                    var any = false;
+                    for (0..group.per_copy) |part| {
+                        if (first + part < drawn.len and drawn[first + part] != 0) any = true;
+                    }
+                    if (!any) continue;
+                }
+                const delta = math.sub(Vec3{ transform[12], transform[13], transform[14] }, camera.position);
+                const distance = math.dot(delta, delta);
+                if (distance < nearest_distance) {
+                    nearest_distance = distance;
+                    nearest = index;
+                }
+            }
+            wantModelTextures(model, try streamParts(self, model), group.transforms[nearest orelse continue], .{ .camera = camera, .pixels_at_one_meter = pixels_at_one_meter, .bias = bias, .frustum = null }, null);
+        }
+    }
+
+    var extra: u32 = 0;
+    var resident_bytes: u64 = 0;
+    var count: u32 = 0;
+    var budget = streaming.budget_bytes;
+    while (true) : (extra += 1) {
+        var wanted_bytes: u64 = 0;
+        resident_bytes = 0;
+        count = 0;
+        for (0..self.models.internal.table.slotCount()) |slot_index| if (self.models.internal.table.slotAt(slot_index).value) |*entry| {
+            for (entry.streams) |*stream| {
+                if (stream.data.len == 0) continue;
+                wanted_bytes += stream.bytesFrom(@min(stream.wanted + extra, stream.floor));
+                resident_bytes += stream.bytesFrom(stream.resident);
+                count += 1;
+            }
+        };
+        if (extra == 0 and budget == 0) budget = driverBudget(device, resident_bytes);
+        if (budget == 0 or wanted_bytes <= budget or extra == 16) break;
+    }
+
+    var pending: u32 = 0;
+    var upload_left = streaming.upload_bytes_per_frame;
+    for ([_]bool{ false, true }) |loading| {
+        for (0..self.models.internal.table.slotCount()) |slot_index| if (self.models.internal.table.slotAt(slot_index).value) |*entry| {
+            if (entry.state != .ready) continue;
+            for (entry.streams, 0..) |*stream, index| {
+                if (stream.data.len == 0) continue;
+                const goal = @min(stream.wanted + extra, stream.floor);
+                if (goal == stream.resident) {
+                    stream.low_frames = 0;
+                    continue;
+                }
+                if (loading != (goal < stream.resident)) continue;
+                const before = stream.bytesFrom(stream.resident);
+                const after = stream.bytesFrom(goal);
+                if (loading) {
+                    stream.low_frames = 0;
+                    const fits = budget == 0 or resident_bytes - before + after <= budget;
+                    if (upload_left == 0 or !fits) {
+                        pending += 1;
+                        continue;
+                    }
+                    upload_left -|= after;
+                } else {
+                    stream.low_frames += 1;
+                    const over = budget != 0 and resident_bytes > budget;
+                    if (!over and stream.low_frames < streaming.evict_delay_frames) continue;
+                    stream.low_frames = 0;
+                }
+                const texture = try createStreamTexture(self, stream, goal);
+                device.destroyTexture(entry.textures[index].?);
+                entry.textures[index] = texture;
+                stream.resident = goal;
+                resident_bytes = resident_bytes - before + after;
+                entry.materials_stale = true;
+            }
+        };
+    }
+    for (0..self.models.internal.table.slotCount()) |slot_index| if (self.models.internal.table.slotAt(slot_index).value) |*entry| {
+        if (!entry.materials_stale) continue;
+        entry.materials_stale = false;
+        for (entry.source.?.materials, 0..) |material, index| {
+            const encoded = try encodeMaterial(self, entry, material, index);
+            try self.materials.internal.pool.write(device, entry.material_base + @as(u32, @intCast(index)), std.mem.asBytes(&encoded));
+        }
+    };
+    self.internal.stats.streamed_textures = count;
+    self.internal.stats.streamed_texture_bytes = resident_bytes;
+    self.internal.stats.streamed_textures_pending = pending;
+}

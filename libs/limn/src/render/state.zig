@@ -1,0 +1,1580 @@
+//! Renderer state kept between calls: GPU buffer allocators, loaded
+//! assets, scenes, views and per-effect state. Internal to the renderer.
+const std = @import("std");
+const rhi = @import("../rhi/rhi.zig");
+const math = @import("../math.zig");
+const gltf = @import("../asset/gltf.zig");
+const api = @import("api.zig");
+const ktx2 = @import("../asset/ktx2.zig");
+const texture_codec = @import("texture_codec");
+const shader_sources = @import("shader_sources");
+const png = @import("../png.zig");
+const gpu = @import("gpu.zig");
+const animation = @import("animation.zig");
+const bvh = @import("bvh.zig");
+const handle = @import("../handle.zig");
+const draw_list = @import("draw_list.zig");
+const font_module = @import("font_baker").font;
+const text_layout = @import("text_layout.zig");
+const render = @import("renderer.zig");
+const features = @import("core/features.zig");
+const target_store = @import("core/targets.zig");
+const scene_pass = @import("scene_pass.zig");
+
+const Profiler = render.Profiler;
+const EffectResolution = render.EffectResolution;
+const AssetState = render.AssetState;
+const Camera = render.Camera;
+const CascadeCache = render.CascadeCache;
+const CloudDesc = render.CloudDesc;
+const DecalDesc = render.DecalDesc;
+const Emitter = render.Emitter;
+const EmitterDesc = render.EmitterDesc;
+const Entity = render.Entity;
+const Environment = render.Environment;
+const Fluid = render.Fluid;
+const FluidDesc = render.FluidDesc;
+const FluidFlipbookDesc = render.FluidFlipbookDesc;
+const FluidObstacle = render.FluidObstacle;
+const FluidSource = render.FluidSource;
+const Image = render.Image;
+const InstanceGroup = render.InstanceGroup;
+const LightDesc = render.LightDesc;
+const Liquid = render.Liquid;
+const LiquidDesc = render.LiquidDesc;
+const LiquidSource = render.LiquidSource;
+const Mat4 = render.Mat4;
+const Model = render.Model;
+const ModelInfo = render.ModelInfo;
+const Pose = render.Pose;
+const ReflectionProbe = render.ReflectionProbe;
+const ReflectionProbeDesc = render.ReflectionProbeDesc;
+const Region = render.Region;
+const Renderer = render.Renderer;
+const Scene = render.Scene;
+const SceneFrame = render.SceneFrame;
+const SkyDesc = render.SkyDesc;
+const SunDesc = render.SunDesc;
+const Vec3 = render.Vec3;
+const View = render.View;
+const Water = render.Water;
+const WaterDesc = render.WaterDesc;
+const scene_color_format = render.scene_color_format;
+const shaderCode = render.shaderCode;
+
+pub const hdr_format = scene_color_format;
+pub const bloom_format: rhi.Format = .b10g11r11_float;
+/// Most levels a bloom chain can have; see `Settings.post.bloom_levels`.
+pub const bloom_levels = 6;
+/// Culling views of a frame: main view, shadow cascades, the main view's
+/// late (post-occlusion) phase, local light shadows and VSM pages.
+pub const view_count = 2 + gpu.cascade_count + max_local_shadow_views + gpu.vsm_pages_per_frame;
+pub const main_late_view = 1 + gpu.cascade_count;
+pub const local_view_base = main_late_view + 1;
+/// Most shadow-casting views (atlas tiles) local lights share.
+pub const max_local_shadow_views = 16;
+pub const vsm_view_base = local_view_base + max_local_shadow_views;
+/// Movers listed per scene; beyond this the whole scene counts as moving.
+pub const max_movers = 256;
+
+pub const local_shadow_tiles_per_side = 4;
+/// Clusters are spaced exponentially in depth between these distances.
+pub const cluster_near: f32 = 0.3;
+pub const cluster_far: f32 = 200;
+pub const cluster_z_scale: f32 = @as(f32, gpu.clusters_z) / @log2(cluster_far / cluster_near);
+pub const env_cube_size = 512;
+pub const env_specular_size = 256;
+pub const env_specular_mips = 6;
+pub const env_irradiance_size = 32;
+pub const stream_budget_bytes = 48 * 1024 * 1024;
+
+pub const Range = struct { offset: u32, count: u32 };
+
+/// What an entity took of its scene's entity slots, meshlet references and
+/// ray-tracing instances, and what it added to the scene's totals.
+pub const EntitySpan = struct {
+    layout_first: u32 = 0,
+    layout_count: u32 = 0,
+    ref_first: u32 = 0,
+    ref_count: u32 = 0,
+    tlas_first: u32 = 0,
+    tlas_count: u32 = 0,
+    triangles: u64 = 0,
+    joints: u32 = 0,
+    masked_refs: u32 = 0,
+    skinned: u32 = 0,
+    posed: u32 = 0,
+    /// The frame it was given back in.
+    freed_frame: u64 = 0,
+};
+
+/// First-fit range allocator over element indices with coalescing frees.
+pub const RangeAllocator = struct {
+    free_ranges: std.ArrayList(Range) = .empty,
+    top: u32 = 0,
+    capacity: u32,
+
+    pub fn alloc(self: *RangeAllocator, count: u32) ?u32 {
+        for (self.free_ranges.items, 0..) |*range, index| {
+            if (range.count < count) continue;
+            const offset = range.offset;
+            if (range.count == count) {
+                _ = self.free_ranges.orderedRemove(index);
+            } else {
+                range.offset += count;
+                range.count -= count;
+            }
+            return offset;
+        }
+        if (self.top + count > self.capacity) return null;
+        defer self.top += count;
+        return self.top;
+    }
+
+    pub fn free(self: *RangeAllocator, gpa: std.mem.Allocator, offset: u32, count: u32) void {
+        if (count == 0) return;
+        var index: usize = 0;
+        while (index < self.free_ranges.items.len and self.free_ranges.items[index].offset < offset) index += 1;
+        self.free_ranges.insert(gpa, index, .{ .offset = offset, .count = count }) catch return;
+        if (index + 1 < self.free_ranges.items.len) {
+            const next = self.free_ranges.items[index + 1];
+            if (offset + count == next.offset) {
+                self.free_ranges.items[index].count += next.count;
+                _ = self.free_ranges.orderedRemove(index + 1);
+            }
+        }
+        if (index > 0) {
+            const previous = &self.free_ranges.items[index - 1];
+            if (previous.offset + previous.count == offset) {
+                previous.count += self.free_ranges.items[index].count;
+                _ = self.free_ranges.orderedRemove(index);
+            }
+        }
+        if (self.free_ranges.items.len != 0) {
+            const last = self.free_ranges.items[self.free_ranges.items.len - 1];
+            if (last.offset + last.count == self.top) {
+                self.top = last.offset;
+                _ = self.free_ranges.pop();
+            }
+        }
+    }
+};
+
+/// A growable GPU array shared by every model (vertices, indices, ...). Its
+/// buffer is made by the first `alloc` or `ensure`.
+pub const Pool = struct {
+    name: [:0]const u8,
+    stride: u32,
+    buffer: ?rhi.Buffer = null,
+    ranges: RangeAllocator,
+    usage: rhi.BufferUsage,
+    /// Initial size; the pool never shrinks below it.
+    minimum: u32,
+    /// Set when the pool moves to a new buffer, whose contents arrive with
+    /// the next frame's uploads. Whoever reads the buffer outside the
+    /// frame's commands clears it.
+    replaced: bool = false,
+
+    pub fn init(name: [:0]const u8, stride: u32, capacity: u32, usage: rhi.BufferUsage) Pool {
+        return .{
+            .name = name,
+            .stride = stride,
+            .ranges = .{ .capacity = 0 },
+            .usage = usage,
+            .minimum = capacity,
+        };
+    }
+
+    pub fn deinit(self: *Pool, renderer: *Renderer) void {
+        if (self.buffer) |buffer| renderer.device.destroyBuffer(buffer);
+        self.ranges.free_ranges.deinit(renderer.internal.gpa);
+    }
+
+    /// Makes the buffer at its initial size if nothing has been allocated yet.
+    pub fn ensure(self: *Pool, device: *rhi.Device) !void {
+        if (self.buffer != null) return;
+        self.buffer = try device.createBuffer(.{ .name = self.name, .size = @as(u64, self.minimum) * self.stride, .usage = self.usage });
+        self.ranges.capacity = self.minimum;
+    }
+
+    /// The buffer; `ensure` or `alloc` must have made it.
+    pub fn get(self: *const Pool) rhi.Buffer {
+        return self.buffer.?;
+    }
+
+    pub fn alloc(self: *Pool, renderer: *Renderer, count: u32) !u32 {
+        if (count == 0) return 0;
+        if (self.ranges.alloc(count)) |offset| return offset;
+        const device = renderer.device;
+        const old_capacity = self.ranges.capacity;
+        const new_capacity = @max(self.minimum, old_capacity * 2, self.ranges.top + count);
+        const new_buffer = try device.createBuffer(.{
+            .name = self.name,
+            .size = @as(u64, new_capacity) * self.stride,
+            .usage = self.usage,
+        });
+        if (self.buffer) |old| {
+            if (self.ranges.top != 0) {
+                errdefer device.destroyBuffer(new_buffer);
+                try device.queueBufferCopy(old, new_buffer, @as(u64, self.ranges.top) * self.stride);
+            } else device.destroyBuffer(old);
+        }
+        self.buffer = new_buffer;
+        self.replaced = true;
+        self.ranges.capacity = new_capacity;
+        return self.ranges.alloc(count).?;
+    }
+
+    pub fn free(self: *Pool, renderer: *Renderer, offset: u32, count: u32) void {
+        self.ranges.free(renderer.internal.gpa, offset, count);
+        self.trim(renderer) catch {};
+    }
+
+    /// Moves to a smaller buffer once at most a quarter is in use, measured
+    /// to the last element. Elements keep their indices.
+    pub fn trim(self: *Pool, renderer: *Renderer) !void {
+        const capacity = self.ranges.capacity;
+        if (capacity <= self.minimum or @as(u64, self.ranges.top) * 4 > capacity) return;
+        const new_capacity = @max(self.minimum, self.ranges.top * 2);
+        if (new_capacity >= capacity) return;
+        const device = renderer.device;
+        const new_buffer = try device.createBuffer(.{
+            .name = self.name,
+            .size = @as(u64, new_capacity) * self.stride,
+            .usage = self.usage,
+        });
+        if (self.ranges.top != 0) {
+            errdefer device.destroyBuffer(new_buffer);
+            try device.queueBufferCopy(self.get(), new_buffer, @as(u64, self.ranges.top) * self.stride);
+        } else device.destroyBuffer(self.get());
+        self.buffer = new_buffer;
+        self.replaced = true;
+        self.ranges.capacity = new_capacity;
+    }
+
+    pub fn write(self: *Pool, device: *rhi.Device, offset: u32, bytes: []const u8) !void {
+        try device.uploadBuffer(self.get(), @as(u64, offset) * self.stride, bytes);
+    }
+};
+
+pub const arena_usage = rhi.BufferUsage{ .storage = true, .acceleration_input = true, .copy_src = true };
+
+/// Bump allocator over a mapped buffer for data rewritten every frame.
+pub const FrameArena = struct {
+    buffer: rhi.Buffer,
+    capacity: u64,
+    cursor: u64 = 0,
+    /// Bytes handed out since `reset`, over every buffer.
+    used: u64 = 0,
+    /// Buffers outgrown this frame, kept until `reset`.
+    outgrown: [16]?rhi.Buffer = @splat(null),
+    /// Held to hand out room, as views recording beside each other do.
+    mutex: std.Io.Mutex = .init,
+
+    pub fn Allocation(comptime T: type) type {
+        return struct {
+            address: u64,
+            items: []T,
+            /// Not always the arena's current buffer.
+            buffer: rhi.Buffer,
+            offset: u64,
+        };
+    }
+
+    pub fn init(device: *rhi.Device, capacity: u64) !FrameArena {
+        return .{
+            .buffer = try device.createBuffer(.{ .name = "frame arena", .size = capacity, .usage = arena_usage, .memory = .cpu_to_gpu }),
+            .capacity = capacity,
+        };
+    }
+
+    pub fn reset(self: *FrameArena, device: *rhi.Device) void {
+        self.cursor = 0;
+        self.used = 0;
+        for (&self.outgrown) |*slot| {
+            if (slot.*) |buffer| device.destroyBuffer(buffer);
+            slot.* = null;
+        }
+    }
+
+    pub fn deinit(self: *FrameArena, device: *rhi.Device) void {
+        self.reset(device);
+        device.destroyBuffer(self.buffer);
+    }
+
+    /// Room for `count` values of `T`, valid until the next `reset`.
+    pub fn alloc(self: *FrameArena, device: *rhi.Device, comptime T: type, count: usize) !Allocation(T) {
+        self.mutex.lockUncancelable(device.io);
+        defer self.mutex.unlock(device.io);
+        const size = @sizeOf(T) * @max(count, 1);
+        var offset = std.mem.alignForward(u64, self.cursor, 16);
+        if (offset + size > self.capacity) {
+            const capacity = @max(self.capacity * 2, size * 2);
+            const buffer = try device.createBuffer(.{ .name = "frame arena", .size = capacity, .usage = arena_usage, .memory = .cpu_to_gpu });
+            for (&self.outgrown) |*slot| {
+                if (slot.* != null) continue;
+                slot.* = self.buffer;
+                break;
+            } else {
+                device.destroyBuffer(buffer);
+                return error.FrameArenaExhausted;
+            }
+            self.buffer = buffer;
+            self.capacity = capacity;
+            offset = 0;
+        }
+        self.cursor = offset + size;
+        self.used += size;
+        const bytes = device.mapped(self.buffer)[@intCast(offset)..][0..size];
+        return .{
+            .address = device.bufferAddress(self.buffer) + offset,
+            .items = @as([*]T, @ptrCast(@alignCast(bytes.ptr)))[0..count],
+            .buffer = self.buffer,
+            .offset = offset,
+        };
+    }
+};
+
+pub const ModelJob = struct {
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    path: []u8,
+    options: gltf.LoadOptions = .{},
+    group: std.Io.Group = .init,
+    done: std.atomic.Value(bool) = .init(false),
+    model: ?gltf.Model = null,
+    failure: ?anyerror = null,
+};
+
+pub fn runModelJob(job: *ModelJob) std.Io.Cancelable!void {
+    if (gltf.load(job.gpa, job.io, job.path, job.options)) |model| {
+        job.model = model;
+    } else |err| {
+        if (err == error.Canceled) return error.Canceled;
+        job.failure = err;
+    }
+    job.done.store(true, .release);
+}
+
+/// A build of the standard shading pass that has been asked for.
+pub const ShadeVariant = struct {
+    reflective: bool,
+    features: u32,
+};
+
+pub fn shadeVariantDesc(device: *const rhi.Device, reflective: bool, constants: []const u32) rhi.GraphicsPipelineDesc {
+    return .{
+        .name = if (reflective) "shading (reflective, variant)" else "shading (variant)",
+        .vertex = shaderCode("fullscreen.vert.spv"),
+        .fragment = if (reflective)
+            (if (device.caps.ray_tracing) shaderCode("shade_rt.frag.spv") else shaderCode("shade.frag.spv"))
+        else if (device.caps.ray_tracing) shaderCode("shade_rt_plain.frag.spv") else shaderCode("shade_plain.frag.spv"),
+        .color_targets = if (reflective) &shade_reflective_targets else &shade_plain_targets,
+        .cull = .none,
+        .fragment_constants = constants,
+    };
+}
+
+pub const EnvironmentJob = struct {
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    path: []u8,
+    /// What Basis Universal cube maps are transcoded to.
+    basis: ktx2.BasisTarget = .bc,
+    group: std.Io.Group = .init,
+    done: std.atomic.Value(bool) = .init(false),
+    image: ?gltf.HdrImage = null,
+    /// A cube map read from a KTX2 file, instead of `image`.
+    cube: ?ktx2.Texture = null,
+    cube_brightest: ?Vec3 = null,
+    failure: ?anyerror = null,
+};
+
+pub fn runEnvironmentJob(job: *EnvironmentJob) std.Io.Cancelable!void {
+    if (loadEnvironmentFile(job)) |_| {} else |err| {
+        if (err == error.Canceled) return error.Canceled;
+        job.failure = err;
+    }
+    job.done.store(true, .release);
+}
+
+pub fn loadEnvironmentFile(job: *EnvironmentJob) !void {
+    const bytes = try gltf.readFile(job.gpa, job.io, job.path);
+    const is_cube = ktx2.isKtx2(bytes);
+    if (!is_cube) {
+        job.gpa.free(bytes);
+        job.image = try gltf.loadHdr(job.gpa, job.io, job.path);
+        return;
+    }
+    defer job.gpa.free(bytes);
+    const cube = try ktx2.read(job.gpa, bytes, job.basis);
+    errdefer job.gpa.free(cube.data);
+    if (cube.faces != 6 or cube.layers != 1) return error.NotACubeMap;
+    if (cube.format != .rgba16f and cube.format != .bc6h) return error.UnsupportedTextureFormat;
+    job.cube_brightest = if (cube.format == .rgba16f) brightestCubeDirection(cube) else null;
+    job.cube = cube;
+}
+
+/// Direction toward the brightest texel of a half-float cube map's
+/// largest level. Matches `cubeDirection` in the environment shaders.
+pub fn brightestCubeDirection(cube: ktx2.Texture) Vec3 {
+    const size: usize = cube.width;
+    var best: f32 = -1;
+    var best_direction: Vec3 = .{ 0, 1, 0 };
+    for (0..6) |face| for (0..size) |y| for (0..size) |x| {
+        const texel = cube.data[((face * size + y) * size + x) * 8 ..][0..6];
+        var rgb: [3]f32 = undefined;
+        for (&rgb, 0..) |*channel, index| channel.* = @as(f16, @bitCast(std.mem.readInt(u16, texel[index * 2 ..][0..2], .little)));
+        const luminance = rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+        if (!(luminance > best)) continue;
+        best = luminance;
+        const px = (@as(f32, @floatFromInt(x)) + 0.5) / @as(f32, @floatFromInt(size)) * 2 - 1;
+        const py = (@as(f32, @floatFromInt(y)) + 0.5) / @as(f32, @floatFromInt(size)) * 2 - 1;
+        best_direction = math.normalize(switch (face) {
+            0 => Vec3{ 1, -py, -px },
+            1 => Vec3{ -1, -py, px },
+            2 => Vec3{ px, 1, py },
+            3 => Vec3{ px, -1, -py },
+            4 => Vec3{ px, -py, 1 },
+            else => Vec3{ -px, -py, -1 },
+        });
+    };
+    return best_direction;
+}
+
+pub const ModelMesh = struct {
+    vertex_offset: u32,
+    vertex_count: u32,
+    skin_offset: ?u32,
+    /// Morph target deltas: `morph_targets` runs of `vertex_count`.
+    morph_offset: ?u32 = null,
+    morph_targets: u32 = 0,
+    index_offset: u32,
+    index_count: u32,
+    /// Indices of the full-detail level, which come first.
+    lod0_index_count: u32 = 0,
+    meshlet_offset: u32,
+    meshlet_count: u32,
+    material: u32,
+    /// Uses alpha blending; drawn by the forward pass.
+    blend: bool,
+    /// Cut out, blended or two-sided.
+    masked: bool = false,
+    /// Drawn only where its alpha passes the material's cutoff.
+    alpha_tested: bool = false,
+    /// Its tree in `bvh_nodes` and leaf triangles in `bvh_items`, when built
+    /// (`Options.ray_tracing.software_path_tracing`).
+    bvh_nodes: ?u32 = null,
+    bvh_node_count: u32 = 0,
+    bvh_items: u32 = 0,
+    bvh_item_count: u32 = 0,
+    /// Root box of the tree, in mesh space.
+    bvh_min: [3]f32 = .{ 0, 0, 0 },
+    bvh_max: [3]f32 = .{ 0, 0, 0 },
+    /// The coarse part (from `gltf.Mesh`): the first `coarse_vertex_count`
+    /// vertices and the indices past the full-detail level's. `coarse` is
+    /// set while only that part is in GPU memory.
+    coarse_vertex_count: u32 = 0,
+    coarse_error: f32 = 0,
+    coarse: bool = false,
+    blas: ?rhi.AccelerationStructure = null,
+    blas_building: ?rhi.AccelerationStructure = null,
+};
+
+pub const MaterialTextures = api.MaterialTextures;
+
+pub const ModelEntry = struct {
+    state: AssetState = .loading,
+    job: ?*ModelJob = null,
+    failure: ?anyerror = null,
+    source: ?gltf.Model = null,
+    textures: []?rhi.Texture = &.{},
+    /// Parallel to `textures`; entries with data are streamed.
+    streams: []TextureStream = &.{},
+    stream_parts: []StreamPart = &.{},
+    streamed: u32 = 0,
+    materials_stale: bool = false,
+    /// Overrides from `materials.setTextures`; empty, or one per material.
+    material_images: []MaterialTextures = &.{},
+    next_image: usize = 0,
+    meshes: []ModelMesh = &.{},
+    mesh_base: u32 = 0,
+    material_base: u32 = 0,
+    /// First material buffer slot of this model's per-texture transforms.
+    transform_base: u32 = 0,
+    transform_count: u32 = 0,
+    /// A material has a coat, sheen, grain or thin film, which shading then
+    /// keeps code for (`Internal.lobe_users`).
+    lobed: bool = false,
+    /// Parents-before-children node order and rest-pose world matrices.
+    order: []u32 = &.{},
+    /// The part of `order` a posed entity needs: nodes an animation can
+    /// move that have a mesh, are skin joints or are ancestors of such.
+    pose_order: []u32 = &.{},
+    /// Per node, whether an animation can move it.
+    node_moves: []bool = &.{},
+    node_world: []Mat4 = &.{},
+    info: ModelInfo = std.mem.zeroes(ModelInfo),
+    references: u32 = 0,
+    /// `models.destroy` was asked while entities still used it; freed when
+    /// the last one goes.
+    orphaned: bool = false,
+    blas_pending: bool = false,
+    blas_job: ?rhi.Detached = null,
+    /// Some of the model's structures wait to be replaced by smaller copies.
+    blas_compacting: bool = false,
+    /// Whether vertices and indices are in GPU memory (geometry streaming);
+    /// while not, what is drawn with the model is left out of its scene.
+    geometry_resident: bool = true,
+    geometry_coarse: bool = false,
+    /// Drawn by something other than entities; never streamed out.
+    geometry_pinned: bool = false,
+    /// This frame's distance from the nearest camera to the nearest use.
+    stream_distance: f32 = 0,
+};
+
+pub const EnvironmentEntry = struct {
+    state: AssetState = .loading,
+    job: ?*EnvironmentJob = null,
+    failure: ?anyerror = null,
+    max_radiance: f32,
+    sky: ?rhi.Texture = null,
+    specular: ?rhi.Texture = null,
+    irradiance: ?rhi.Texture = null,
+    brightest_direction: Vec3 = .{ 0, 1, 0 },
+    /// Set for computed skies; `sky_dirty` asks for a rebuild.
+    sky_desc: ?SkyDesc = null,
+    sky_dirty: bool = false,
+    /// A rebuild under way: the next face to draw (0 when idle) and the
+    /// description it is drawn from.
+    bake_step: u32 = 0,
+    bake_desc: SkyDesc = .{},
+    /// The cloud layer baked into the lighting cubes, and when.
+    clouds: ?gpu.Clouds = null,
+    cloud_bake_time: f32 = 0,
+    /// For a loaded environment under clouds: the picture as loaded, and
+    /// the sun its clouds are lit by.
+    clear: ?rhi.Texture = null,
+    cloud_to_sun: Vec3 = .{ 0, 1, 0 },
+    cloud_sunlight: Vec3 = .{ 0, 0, 0 },
+};
+
+pub const LayoutEntry = struct {
+    entity: Entity,
+    model_instance: u32,
+    first_of_entity: bool,
+};
+
+/// What `prepareScene` needs of a layout entry when its entity moves, kept
+/// apart from the entity and its model.
+pub const EntryInfo = struct {
+    /// Model-space bounds of the mesh.
+    center: Vec3,
+    radius: f32,
+    /// The model's matrix of the node the mesh hangs from; null when it is
+    /// skinned or an animation can move that node.
+    rest: ?*const Mat4 = null,
+    /// Where its ray-tracing instance is, or `gpu.invalid_id`.
+    tlas_slot: u32 = gpu.invalid_id,
+    bits: u8 = 0,
+
+    pub const skinned: u8 = 1;
+    /// Skinned, or on a node an animation can move.
+    pub const posed: u8 = 2;
+    pub const glows: u8 = 8;
+    /// Its record says it moved; the next frame must say otherwise.
+    pub const moved: u8 = 16;
+};
+
+/// An entity's transform bookkeeping, by entity slot. Small and apart from
+/// `EntityData` so that moving many entities touches little memory.
+pub const EntityMark = struct {
+    /// The entity's handle as bits; 0 while the slot is free.
+    handle: u64 = 0,
+    scene: Scene = undefined,
+    /// Its entries in the scene's layout.
+    layout_first: u32 = 0,
+    layout_count: u32 = 0,
+    /// Where it is in its scene's `entities`.
+    listed_at: u32 = 0,
+    /// Distance moved in the last prepared frame.
+    travelled: f32 = 0,
+    bits: u32 = 0,
+    /// Has a parent or children, so moving it means more than its own slot.
+    related: bool = false,
+
+    /// In its scene's `edited` list.
+    pub const listed: u32 = 1;
+    pub const moved: u32 = 2;
+    /// Moved without it counting as motion.
+    pub const teleported: u32 = 4;
+    /// Tint, params or lightmap changed: its records are rewritten whole.
+    pub const restyled: u32 = 8;
+};
+
+/// `Move` in instance_update.slang: a new transform for one instance.
+pub const InstanceMove = extern struct {
+    instance: u32,
+    tlas_slot: u32 = gpu.invalid_id,
+    flags: u32,
+    pad: u32 = 0,
+    transform: [12]f32,
+
+    /// The record is marked as moving.
+    pub const moved: u32 = 1;
+    /// The transform it had becomes last frame's transform.
+    pub const keep: u32 = 2;
+};
+
+/// `Rewrite` in instance_update.slang: a whole record for one instance.
+pub const InstanceRewrite = extern struct {
+    instance: u32,
+    tlas_slot: u32 = gpu.invalid_id,
+    pad: [2]u32 = .{ 0, 0 },
+    previous: [12]f32,
+    record: gpu.Instance,
+};
+
+/// `Glowing` in pathtrace.slang: an evenly emissive instance and the
+/// triangle count of its full-detail level.
+pub const Glowing = extern struct { instance: u32, triangles: u32 };
+/// Most glowing instances path tracing samples directly.
+pub const max_glowing = 1024;
+
+pub const SceneData = struct {
+    /// Bounds (center, radius) of what moved this frame, for choosing shadow
+    /// tiles to redraw; `movers_overflow` if there were too many to list.
+    movers: std.ArrayList([4]f32) = .empty,
+    movers_overflow: bool = false,
+    entities: std.ArrayList(Entity) = .empty,
+    sun: SunDesc = .{ .intensity = 0 },
+    environment: ?Environment = null,
+    environment_intensity: f32 = 1,
+    lights: std.ArrayList(LightDesc) = .empty,
+    /// The handle of each light, where it has one; see `placed.zig`.
+    light_handles: std.ArrayList(?api.Light) = .empty,
+    /// Bumped whenever the lights are replaced or moved.
+    lights_version: u64 = 0,
+    emitters: std.ArrayList(Emitter) = .empty,
+    probes: std.ArrayList(ReflectionProbe) = .empty,
+    fluids: std.ArrayList(Fluid) = .empty,
+    waters: std.ArrayList(Water) = .empty,
+    hairs: std.ArrayList(render.Hair) = .empty,
+    liquids: std.ArrayList(Liquid) = .empty,
+    groups: std.ArrayList(InstanceGroup) = .empty,
+    /// GPU instances that come from groups, and a counter bumped whenever
+    /// their records must be rewritten.
+    static_count: u32 = 0,
+    static_version: u64 = 0,
+    /// The last `prepareLights` result, the frame it was made in and what it was
+    /// asked for; later views of the frame that ask the same share it.
+    /// The scene's light records, kept on the GPU between frames; only those
+    /// that changed since `light_uploaded` are uploaded. `light_next` is
+    /// where the frame's records are built.
+    light_buffer: ?rhi.Buffer = null,
+    light_capacity: u32 = 0,
+    light_uploaded: std.ArrayList(gpu.Light) = .empty,
+    light_next: std.ArrayList(gpu.Light) = .empty,
+    /// The scene's decal records, kept the same way as its lights'.
+    decal_buffer: ?rhi.Buffer = null,
+    decal_capacity: u32 = 0,
+    decal_uploaded: std.ArrayList(gpu.Decal) = .empty,
+    decal_next: std.ArrayList(gpu.Decal) = .empty,
+    lighting: ?scene_pass.Lighting = null,
+    lighting_frame: u64 = std.math.maxInt(u64),
+    lighting_shadows: bool = false,
+    lighting_traced: bool = false,
+    /// Which lights `prepareLights` gave shadow atlas tiles, and the frame it
+    /// chose them in.
+    shadow_grants: std.ArrayList(bool) = .empty,
+    shadow_grants_frame: u64 = std.math.maxInt(u64),
+    shadow_grants_traced: bool = false,
+    /// The groups' ray-tracing instances, and the group state they were made
+    /// from.
+    static_tlas: std.ArrayList(rhi.AccelerationInstance) = .empty,
+    static_tlas_version: u64 = std.math.maxInt(u64),
+    static_tlas_base: usize = 0,
+    /// Keep the CPU instance tree up to date for fallback path tracing.
+    trace_wanted: bool = false,
+    trace_ready: bool = false,
+    /// Changes with the tree's contents; resets accumulated pictures.
+    trace_hash: u64 = 0,
+    trace_nodes: ?rhi.Buffer = null,
+    trace_nodes_capacity: u32 = 0,
+    trace_instances: ?rhi.Buffer = null,
+    trace_instances_capacity: u32 = 0,
+    instance_slots: [rhi.frames_in_flight]InstanceSlot = @splat(.{}),
+    decals: std.ArrayList(DecalDesc) = .empty,
+    /// The handle of each decal, where it has one.
+    decal_handles: std.ArrayList(?api.Decal) = .empty,
+    transmissive: bool = false,
+    /// GPU instance indices of blended geometry, drawn in the forward pass.
+    transparent: std.ArrayList(TransparentDraw) = .empty,
+    /// Blended meshes of instance groups, added to `transparent` each frame.
+    static_transparent: std.ArrayList(TransparentDraw) = .empty,
+    static_transmissive: bool = false,
+    /// Flattened (entity, model instance) list; index = GPU instance index.
+    layout: std.ArrayList(LayoutEntry) = .empty,
+    /// The entities of `layout` that animate, and the most nodes one has.
+    posed: std.ArrayList(Entity) = .empty,
+    posed_nodes: usize = 0,
+    /// One per layout entry, and its world-space bounding sphere.
+    entries: std.ArrayList(EntryInfo) = .empty,
+    spheres: std.ArrayList([4]f32) = .empty,
+    /// The blended layout entries, without their centers; whether any
+    /// lets light through; and the first entries that glow.
+    blended: std.ArrayList(TransparentDraw) = .empty,
+    blended_transmissive: bool = false,
+    /// Layout entries of the animated entities.
+    posed_entries: u32 = 0,
+    glowing: std.ArrayList(Glowing) = .empty,
+    /// Bounds of the ray-traced entries of each `prepare_batch` of the
+    /// layout, and which must be measured again.
+    chunk_bounds: std.ArrayList([2]Vec3) = .empty,
+    chunk_stale: std.ArrayList(bool) = .empty,
+    /// Entity slots changed since the scene was last prepared.
+    edited: std.ArrayList(u32) = .empty,
+    /// Layout entries of the entities in `edited`, and of those among them
+    /// whose records are to be written whole.
+    edited_entries: usize = 0,
+    restyled_entries: usize = 0,
+    /// Layout entries whose records say they moved last frame, each with
+    /// its entity's slot.
+    settling: std.ArrayList([2]u32) = .empty,
+    /// False when every record must be written again, not only the edited.
+    records_valid: bool = false,
+    /// Last frame's transform of each entity instance.
+    previous: ?rhi.Buffer = null,
+    previous_capacity: u32 = 0,
+    /// Ray-tracing instances: entities', then groups', then skinned ones.
+    tlas_instances: ?rhi.Buffer = null,
+    tlas_instances_capacity: u32 = 0,
+    rigid_tlas: u32 = 0,
+    skinned_entries: u32 = 0,
+    /// Changes whenever the ray-tracing instances do.
+    tlas_content: u64 = 0,
+    static_tlas_uploaded: bool = false,
+    layout_dirty: bool = true,
+    layout_generation: u64 = 0,
+    /// This frame's deforming work for the scene, made by `prepareScene` and
+    /// recorded by its first view: skinning, bounds of skinned meshlets and
+    /// refits of dynamic BLASes, the next of which to refit first.
+    skin_jobs: std.ArrayList(SkinJob) = .empty,
+    skin_weights: std.ArrayList(f32) = .empty,
+    bounds_jobs: std.ArrayList(BoundsJob) = .empty,
+    blas_jobs: std.ArrayList(BlasJob) = .empty,
+    refit_cursor: usize = 0,
+    /// Free entity slots, meshlet references and ray-tracing instances below
+    /// the `entity_*_capacity`s.
+    instance_ranges: RangeAllocator = .{ .capacity = 0 },
+    ref_ranges: RangeAllocator = .{ .capacity = 0 },
+    tlas_ranges: RangeAllocator = .{ .capacity = 0 },
+    /// Entities to lay out, and spans to clear, before the next frame's
+    /// records, instead of laying out the whole scene again.
+    added: std.ArrayList(Entity) = .empty,
+    removed: std.ArrayList(EntitySpan) = .empty,
+    /// Cleared spans, free again once no frame in flight or pick names them.
+    quarantine: std.ArrayList(EntitySpan) = .empty,
+    refs: ?rhi.Buffer = null,
+    refs_capacity: u32 = 0,
+    /// Meshlet references of entities; they precede instance groups'.
+    entity_ref_count: u32 = 0,
+    /// Instance slots, meshlet references and ray-tracing instances kept
+    /// for entities; instance groups' start after them. They change only
+    /// when the layout is rebuilt.
+    /// Entity slots that hold an entity's instance.
+    live_instances: u32 = 0,
+    /// Meshlet references that belong to an entity.
+    live_refs: u32 = 0,
+    entity_capacity: u32 = 0,
+    entity_ref_capacity: u32 = 0,
+    entity_tlas_capacity: u32 = 0,
+    masked_ref_count: u32 = 0,
+    /// First reference and count for each instance of the instance groups,
+    /// in instance record order.
+    static_ranges: std.ArrayList([2]u32) = .empty,
+    static_cull: ?rhi.Buffer = null,
+    static_cull_capacity: u32 = 0,
+    /// First meshlet reference and count of each entity slot, which culling
+    /// tests entity by entity before their meshlets; `entity_cull_items` is
+    /// the CPU copy and `entity_cull_dirty` the slots changed since upload.
+    entity_cull: ?rhi.Buffer = null,
+    entity_cull_capacity: u32 = 0,
+    entity_cull_items: std.ArrayList([2]u32) = .empty,
+    entity_cull_dirty: [2]u32 = .{ std.math.maxInt(u32), 0 },
+    /// One `gpu.Impostor` per instance group that has one, their count, and
+    /// the copies culling chose to draw as impostors in the current view.
+    impostor_table: ?rhi.Buffer = null,
+    impostor_table_capacity: u32 = 0,
+    impostor_count: u32 = 0,
+    lightmaps_baking: u32 = 0,
+    impostor_list: ?rhi.Buffer = null,
+    impostor_list_capacity: u32 = 0,
+    /// Per view, the meshlet references of instances that passed culling:
+    /// room for all of the instance groups', `candidate_views` times over.
+    candidates: ?rhi.Buffer = null,
+    candidate_capacity: u32 = 0,
+    candidate_views: u32 = 0,
+    /// Per instance, whether a camera drew any part of it this frame, and
+    /// its CPU read-back copies (only when texture streaming skips what is
+    /// hidden).
+    seen: ?rhi.Buffer = null,
+    seen_capacity: u32 = 0,
+    seen_readback: [rhi.frames_in_flight]?rhi.Buffer = @splat(null),
+    seen_tags: [rhi.frames_in_flight]SeenTag = @splat(.{}),
+    /// Meshlet bounds of deformed meshes, rewritten on the GPU every frame
+    /// (`Options.geometry.skinned_meshlet_bounds`).
+    skin_bounds: ?rhi.Buffer = null,
+    skin_bounds_capacity: u32 = 0,
+    layout_version: u64 = 0,
+    /// Renderer frame the per-frame data below was written for.
+    prepared_frame: u64 = std.math.maxInt(u64),
+    prepared: SceneFrame = undefined,
+    gi_frame: u64 = std.math.maxInt(u64),
+    gi_updated_frame: u64 = std.math.maxInt(u64),
+    /// What the probes last saw of the scene's geometry and of its lights,
+    /// and for how many frames each has stayed the same.
+    gi_geometry_key: u64 = 0,
+    gi_geometry_still: u32 = 0,
+    gi_lighting_key: u64 = 0,
+    gi_lighting_still: u32 = 0,
+    ref_count: u32 = 0,
+    joint_count: u32 = 0,
+    triangle_count: u64 = 0,
+    /// The ray tracing structure; see scene/ray_scene.zig.
+    tlas: ?rhi.AccelerationStructure = null,
+    tlas_capacity: u32 = 0,
+    tlas_hash: u64 = 0,
+    /// A view has asked to trace rays through the scene.
+    rays_wanted: bool = false,
+    /// The irradiance probe grids, finest first. With more than one, the
+    /// last covers the whole scene and the others follow the camera.
+    gi_cascades: [gpu.gi_cascade_max]?GiVolume = @splat(null),
+    gi_cascade_count: u32 = 0,
+    /// Explicit probe volume; null derives it from the static geometry.
+    gi_bounds: ?[2]Vec3 = null,
+    /// This scene's origin in the application's world; see `scenes.shift`.
+    origin: [3]f64 = .{ 0, 0, 0 },
+    clouds: ?CloudDesc = null,
+    /// Accumulated cloud drift, and when it was last updated.
+    cloud_drift: [3]f64 = .{ 0, 0, 0 },
+    cloud_time: f32 = 0,
+    /// The lightning flash under way: when it began and where.
+    flash_start: f32 = -1000,
+    flash_position: [3]f64 = .{ 0, 0, 0 },
+    flash_brightness: f32 = 0,
+    flash_checked: f32 = -1,
+};
+
+pub const no_skin = std.math.maxInt(u32);
+
+pub const LightmapState = struct {
+    /// Accumulated light and the next round's target; swapped every round.
+    gathered: [2]rhi.Texture,
+    /// The same with the gaps between patches filled: what shading reads.
+    shown: rhi.Texture,
+    rounds: u32 = 0,
+    wanted: u32,
+    rays: u32,
+    reach: f32,
+};
+
+pub const EntityData = struct {
+    lightmap: ?LightmapState = null,
+    scene: Scene,
+    /// The entity it moves with, and its transform relative to that entity.
+    parent: ?Entity = null,
+    local: Mat4 = math.identity,
+    /// Entities whose `parent` this is.
+    children: std.ArrayList(Entity) = .empty,
+    /// In the ray-tracing structure with an instance record, but never drawn.
+    rays_only: bool = false,
+    model: Model,
+    visible: bool,
+    tint: u32 = 0xffffffff,
+    params: [4]f32 = .{ 0, 0, 0, 0 },
+    receive_decals: bool = true,
+    pose: ?Pose = null,
+    morph_weights: ?[gltf.max_morph_targets]f32 = null,
+    /// Allocated once the model is ready, and only for models that animate.
+    node_world: []Mat4 = &.{},
+    previous_node_world: []Mat4 = &.{},
+    /// Per model instance: base of its 2x vertex range for skinned output.
+    skin_offsets: []u32 = &.{},
+    /// The texture streaming round in which a camera last drew this entity.
+    seen_round: u64 = 0,
+    /// Where the entity's instances start in the layout, as of that round.
+    seen_first: u32 = 0,
+    /// Per model instance: per-frame BLAS of skinned or morphed meshes.
+    skin_blas: []?rhi.AccelerationStructure = &.{},
+    /// Per model instance: meshlet bounds offset, or `gpu.invalid_id`.
+    bounds_offsets: []u32 = &.{},
+    /// Model-space center and radius of the posed skeleton, padded for the
+    /// skin. Instance groups that follow this entity's pose are culled by it.
+    skin_bounds: [4]f32 = .{ 0, 0, 0, 0 },
+    /// Frames this entity has been skinned for; 0 means no valid history.
+    history_frames: u32 = 0,
+    resolved: bool = false,
+};
+
+pub const TransparentDraw = struct {
+    instance: u32,
+    first_index: u32,
+    index_count: u32,
+    /// World-space center, for back-to-front sorting.
+    center: Vec3,
+    depth: f32 = 0,
+    transmissive: bool = false,
+};
+
+pub const BlasJob = struct { blas: rhi.AccelerationStructure, vertex_offset: u32, mesh: ModelMesh };
+/// `BoundsJob` in skin.slang.
+pub const BoundsJob = extern struct {
+    vertex_offset: u32,
+    meshlet_offset: u32,
+    meshlet_count: u32,
+    bounds_offset: u32,
+    first_group: u32 = 0,
+    pad: [3]u32 = .{ 0, 0, 0 },
+};
+
+/// `SkinJob` in skin.slang.
+pub const SkinJob = extern struct {
+    source_offset: u32,
+    destination_offset: u32,
+    skin_offset: u32,
+    joint_offset: u32,
+    vertex_count: u32,
+    /// First delta of the mesh's first morph target, and how many targets.
+    morph_offset: u32 = 0,
+    target_count: u32 = 0,
+    /// This job's first work group in the batched dispatch.
+    first_group: u32 = 0,
+    /// Where this job's target weights start in the frame's weight list.
+    weights_offset: u32 = 0,
+    pad: [3]u32 = .{ 0, 0, 0 },
+};
+
+comptime {
+    std.debug.assert(@sizeOf(SkinJob) == 48);
+}
+
+/// Tracks textures a constructor has made, for `errdefer made.destroy()`.
+pub const MadeTextures = struct {
+    device: *rhi.Device,
+    textures: [96]rhi.Texture = undefined,
+    count: usize = 0,
+
+    pub fn texture(self: *MadeTextures, desc: rhi.TextureDesc) !rhi.Texture {
+        std.debug.assert(self.count < self.textures.len);
+        const made = try self.device.createTexture(desc);
+        self.textures[self.count] = made;
+        self.count += 1;
+        return made;
+    }
+
+    pub fn destroy(self: *MadeTextures) void {
+        for (self.textures[0..self.count]) |made| self.device.destroyTexture(made);
+        self.count = 0;
+    }
+};
+
+/// The targets every scene view has, at one resolution. Targets that belong
+/// to one feature are kept apart, in `ViewData.kept`.
+pub const ViewState = struct {
+    width: u32,
+    height: u32,
+    /// Size of the picture once antialiasing has resolved it.
+    resolved_width: u32,
+    resolved_height: u32,
+    depth: rhi.Texture,
+    /// Last frame's depth; the two swap every frame.
+    previous_depth: rhi.Texture,
+    /// Last frame's motion; swapped like the depth.
+    previous_motion: rhi.Texture,
+    visibility: rhi.Texture,
+    motion: rhi.Texture,
+    hdr: rhi.Texture,
+    history_valid: bool = false,
+
+    pub fn init(device: *rhi.Device, width: u32, height: u32, resolved_width: u32, resolved_height: u32) !ViewState {
+        const color = rhi.TextureUsage{ .sampled = true, .color_attachment = true };
+        var self: ViewState = undefined;
+        var made = MadeTextures{ .device = device };
+        errdefer made.destroy();
+        self.width = width;
+        self.height = height;
+        self.resolved_width = resolved_width;
+        self.resolved_height = resolved_height;
+        self.history_valid = false;
+        self.depth = try made.texture(.{ .name = "depth", .width = width, .height = height, .format = .depth32_float, .usage = .{ .sampled = true, .depth_attachment = true } });
+        self.previous_depth = try made.texture(.{ .name = "depth", .width = width, .height = height, .format = .depth32_float, .usage = .{ .sampled = true, .depth_attachment = true } });
+        self.visibility = try made.texture(.{ .name = "visibility", .width = width, .height = height, .format = .r32_uint, .usage = color });
+        self.motion = try made.texture(.{ .name = "motion", .width = width, .height = height, .format = .rg16_float, .usage = color });
+        self.previous_motion = try made.texture(.{ .name = "motion", .width = width, .height = height, .format = .rg16_float, .usage = color });
+        self.hdr = try made.texture(.{ .name = "hdr", .width = width, .height = height, .format = hdr_format, .usage = color });
+        return self;
+    }
+
+    pub fn deinit(self: *ViewState, device: *rhi.Device) void {
+        for ([_]rhi.Texture{ self.depth, self.previous_depth, self.visibility, self.motion, self.previous_motion, self.hdr }) |texture|
+            device.destroyTexture(texture);
+    }
+};
+
+pub const ViewData = struct {
+    state: ?ViewState = null,
+    /// The scene's see-through draws in this view's back-to-front order.
+    transparent_order: std.ArrayList(TransparentDraw) = .empty,
+    /// Display-referred picture of a view drawn into part of a target;
+    /// copied into place once its draw lists are done.
+    output: ?rhi.Texture = null,
+    output_format: rhi.Format = undefined,
+    exposure: rhi.Buffer,
+    exposure_reset: bool = true,
+    previous_view_proj: Mat4 = math.identity,
+    /// The scene origin `previous_view_proj` was made under.
+    scene_origin: [3]f64 = .{ 0, 0, 0 },
+    previous_jitter: [2]f32 = .{ 0, 0 },
+    /// Frames this view has rendered; drives jitter and history swaps.
+    frames: u64 = 0,
+    last_frame: u64 = std.math.maxInt(u64),
+    /// Whether `previous_view_proj` is the camera of one frame ago: the view
+    /// drew the previous frame into its current targets.
+    camera_known: bool = false,
+    /// Targets features keep for this view from frame to frame.
+    kept: target_store.Kept = .{},
+    /// Each feature's own state for this view.
+    features: features.ViewStates = features.emptyViewStates(),
+    /// Frames since each feature last asked for its state.
+    feature_idle: [features.list.len]u32 = @splat(0),
+
+    pub fn deinit(self: *ViewData, gpa: std.mem.Allocator, device: *rhi.Device) void {
+        self.transparent_order.deinit(gpa);
+        self.kept.deinit(gpa, device);
+        if (self.state) |*state| state.deinit(device);
+        if (self.output) |texture| device.destroyTexture(texture);
+        features.deinitViewStates(&self.features, device);
+        device.destroyBuffer(self.exposure);
+    }
+};
+
+pub const Output = struct {
+    texture: rhi.Texture,
+    format: rhi.Format,
+    region: Region,
+    load: rhi.LoadOp,
+    clear: [4]f32,
+    /// Scene depth for world-space draw list items; null without a scene.
+    depth: ?rhi.Texture = null,
+};
+
+pub const GiVolume = struct {
+    origin: Vec3,
+    /// The origin in whole grid cells, and how far it moved this frame.
+    cell: [3]i32 = .{ 0, 0, 0 },
+    shift: [3]i32 = .{ 0, 0, 0 },
+    spacing: f32,
+    counts: [3]u32,
+    rays_per_probe: u32,
+    /// What shading reads: a slow average of the probe rays.
+    irradiance: rhi.Texture,
+    /// A fast, noisy average of the same rays, to detect lighting changes.
+    irradiance_fast: rhi.Texture,
+    visibility: rhi.Texture,
+    rays: rhi.Buffer,
+    /// Per probe, whether last trace found it buried, decided before a
+    /// trace overwrites the rays it was decided from.
+    buried: rhi.Buffer,
+    /// Per-probe relocation offsets, in two ping-ponged textures.
+    offsets: [2]rhi.Texture,
+    offset_turn: u32 = 0,
+    offsets_valid: bool = false,
+    /// Updates since creation; drives the blend rate.
+    frames: u32 = 0,
+
+    pub fn probeCount(self: GiVolume) u32 {
+        return self.counts[0] * self.counts[1] * self.counts[2];
+    }
+
+    pub fn deinit(self: GiVolume, device: *rhi.Device) void {
+        device.destroyTexture(self.irradiance);
+        device.destroyTexture(self.irradiance_fast);
+        device.destroyTexture(self.visibility);
+        device.destroyBuffer(self.rays);
+        device.destroyBuffer(self.buried);
+        for (self.offsets) |texture| device.destroyTexture(texture);
+    }
+};
+
+pub const gi_irradiance_texels = 8;
+pub const gi_visibility_texels = 16;
+/// Upper bound on `Options.ray_tracing.max_probes`: the scroll offset has 10 bits.
+pub const gi_probe_limit = 256;
+
+pub const PickRequest = struct { view: View, pixel: [2]u32 };
+pub const ReflectionTargets = struct {
+    /// Mirror weight (rgb) and roughness (a) of every surface.
+    weight: rhi.Texture,
+    /// Shading normal (octahedral, rg) and sky visibility (b).
+    surface: rhi.Texture,
+    /// Traced radiance (rgb) and confidence (a), and last frame's.
+    traced: rhi.Texture,
+    history: rhi.Texture,
+    history_valid: bool = false,
+};
+pub const cloud_noise_size = [3]i32{ 128, 128, 64 };
+/// The volume is stored as a sheet of slices, this many to a row.
+pub const cloud_noise_tiles = 8;
+/// Texels across the built-in cloud weather, which repeats.
+pub const cloud_weather_size = 512;
+pub const MaterialPipelines = struct { plain: rhi.Pipeline, reflective: rhi.Pipeline };
+/// The 2x2 matrix (by rows) of a coordinate transform: scale, then rotate.
+pub fn uvMatrix(scale: [2]f32, rotation: f32) [4]f32 {
+    return .{
+        @cos(rotation) * scale[0],  @sin(rotation) * scale[1],
+        -@sin(rotation) * scale[0], @cos(rotation) * scale[1],
+    };
+}
+
+/// Slot of a material's per-texture transforms, if it has any.
+pub fn transformSlot(entry: *const ModelEntry, index: usize) u32 {
+    const materials = (entry.source orelse return gpu.invalid_id).materials;
+    if (entry.transform_count == 0 or index >= materials.len or !materials[index].hasOwnTransforms()) return gpu.invalid_id;
+    var before: u32 = 0;
+    for (materials[0..index]) |material| {
+        if (material.hasOwnTransforms()) before += 1;
+    }
+    return entry.transform_base + before * gpu.texture_transform_slots;
+}
+
+pub fn uvSetBit(reference: ?gltf.TextureRef, bit: u5) u32 {
+    return if (reference) |ref| @as(u32, ref.uv_set & 1) << bit else 0;
+}
+
+/// Packs a color as instance records hold it: RGBA8, opaque.
+pub fn packTint(color: [3]f32) u32 {
+    var packed_color: u32 = 0xff000000;
+    inline for (0..3) |channel| packed_color |= @as(u32, @intFromFloat(std.math.clamp(color[channel], 0, 1) * 255 + 0.5)) << (channel * 8);
+    return packed_color;
+}
+
+pub const max_fluids = 8;
+pub const max_worker_threads = 8;
+/// A change to an entity that can be made later.
+pub const EntityEdit = struct {
+    entity: Entity,
+    change: Change,
+
+    pub const Change = union(enum) {
+        transform: Mat4,
+        /// A transform that is not motion.
+        teleport: Mat4,
+        /// As `packTint` packs it.
+        tint: u32,
+        params: [4]f32,
+        pose: ?Pose,
+    };
+};
+/// Layout entries `prepareScene` hands a thread at a time.
+pub const prepare_batch = 2048;
+/// Edited entities per thread below which moving them is not split.
+pub const move_batch = 4096;
+/// What one batch of `prepareScene` found.
+pub const PrepareChunk = struct {
+    any_moving: bool = false,
+};
+/// Animated entities per thread below which the work is not split.
+pub const pose_batch = 48;
+pub const max_liquids = 4;
+/// Particles a grid cell can list; a cell at rest holds eight. Overflow
+/// hides crowding from the solver and lets the liquid collapse.
+pub const liquid_cell_slots = 48;
+
+pub const LiquidTargets = struct {
+    depth: rhi.Texture,
+    thickness: rhi.Texture,
+    smooth: [2]rhi.Texture,
+};
+
+pub const LiquidState = struct {
+    scene: Scene,
+    /// Time not yet simulated; see `steadyStep`.
+    time_owed: f32 = 0,
+    /// Rays-only box standing in for the liquid in traced reflections.
+    proxy: ?Entity = null,
+    desc: LiquidDesc,
+    /// Copy of the description's jets.
+    sources: [4]LiquidSource = undefined,
+    source_count: u32 = 0,
+    capacity: u32,
+    particles: rhi.Buffer,
+    /// Per particle, the ellipsoid it is drawn as: centre and foam, then its
+    /// three axes, in box space.
+    shapes: rhi.Buffer,
+    /// Per grid cell, how many particles it lists, and the lists.
+    counts: rhi.Buffer,
+    cells: rhi.Buffer,
+    /// The records of a frame's steps, in GPU memory.
+    params_buffer: rhi.Buffer,
+    cell_count: u32,
+    grid: [3]i32,
+    live: u32 = 0,
+    block: [3]u32,
+    started: bool = false,
+    /// Fractional births carried over, per jet.
+    owed: [4]f32 = @splat(0),
+    /// Address of this frame's record on the GPU.
+    params: u64 = 0,
+    params_frame: u64 = std.math.maxInt(u64),
+
+    pub fn deinit(self: *LiquidState, device: *rhi.Device) void {
+        device.destroyBuffer(self.particles);
+        device.destroyBuffer(self.shapes);
+        device.destroyBuffer(self.counts);
+        device.destroyBuffer(self.cells);
+        device.destroyBuffer(self.params_buffer);
+    }
+
+    /// Keeps the sources whose numbers are all finite.
+    pub fn setSources(self: *LiquidState, sources: []const LiquidSource) void {
+        self.source_count = 0;
+        for (sources) |source| {
+            if (self.source_count == self.sources.len) break;
+            const numbers = source.position ++ source.velocity ++ [2]f32{ source.radius, source.rate };
+            if (!for (numbers) |number| {
+                if (!std.math.isFinite(number)) break false;
+            } else true) continue;
+            self.sources[self.source_count] = source;
+            self.source_count += 1;
+        }
+        self.desc.sources = &.{};
+    }
+};
+
+pub const max_waters = 8;
+pub const water_quads = 160;
+pub const HairState = struct {
+    scene: Scene,
+    desc: render.HairDesc,
+    /// One `HairPoint` (hair.slang) per point of every strand.
+    points: rhi.Buffer,
+    stretches: u32,
+    strands: u32,
+    /// Bounding sphere of the strands as given, in the hair's own space.
+    bounds: [4]f32 = .{ 0, 0, 0, 0 },
+    /// Transform the hair was last drawn with, for motion vectors.
+    shown_transform: ?Mat4 = null,
+    /// Strand simulation settings and state; its colliders are in
+    /// `colliders`.
+    simulation: ?render.HairSimulation = null,
+    colliders: [max_hair_colliders][4]f32 = undefined,
+    collider_count: u32 = 0,
+    moving: ?HairMotion = null,
+    /// Mean length between neighbouring points, in the hair's own space.
+    segment: f32 = 0,
+    /// Points per cell of a grid round the hair as drawn, and how much light
+    /// each cell lets through; made when it is first drawn.
+    shade: ?HairShade = null,
+};
+
+/// Buffers of `HairState.shade`.
+pub const HairShade = struct {
+    counts: rhi.Buffer,
+    light: rhi.Buffer,
+};
+
+pub const max_hair_colliders = 6;
+
+/// A `CollisionField` as a texture with one layer per cell along z.
+pub const CollisionFieldState = struct {
+    texture: rhi.Texture,
+    low: [3]f32,
+    cell: f32,
+    size: u32,
+};
+
+pub const hair_density_size = 40;
+
+/// World-space positions of a simulated hair's points, now and a step
+/// ago; swapped every step.
+pub const HairMotion = struct {
+    points: [2]rhi.Buffer,
+    /// Points per cell of a grid round the hair, a step ago and now, and
+    /// the bounds the first was counted in.
+    density: [2]rhi.Buffer,
+    density_low: [3]f32 = .{ 0, 0, 0 },
+    density_cell: f32 = 1,
+    current: u32 = 0,
+    steps: u32 = 0,
+    previous_dt: f32 = 1.0 / 60.0,
+};
+
+pub const WaterState = struct {
+    scene: Scene,
+    desc: WaterDesc,
+    size: [2]u32 = .{ 0, 0 },
+    /// Height and its rate of change; the two alternate, `current` is newer.
+    state: [2]rhi.Texture = undefined,
+    current: u32 = 0,
+    cleared: bool = false,
+    /// The spray emitter, when `WaterDesc.splashes` asks for one.
+    splash: ?Emitter = null,
+    /// Strongest `addRipple` dent since the last step, for the spray.
+    hit_strength: f32 = 0,
+    hit_at: Vec3 = .{ 0, 0, 0 },
+    hit_radius: f32 = 0,
+    ripples: [gpu.max_water_ripples]gpu.WaterRipple = @splat(.{}),
+    ripple_count: u32 = 0,
+    /// Fractional raindrops carried to the next frame.
+    rain_pending: f32 = 0,
+    time_owed: f32 = 0,
+    params: u64 = 0,
+    params_frame: u64 = std.math.maxInt(u64),
+    /// `WaterDesc.ocean`: transformed rows and heights, made on first use.
+    ocean: ?[2]rhi.Buffer = null,
+    /// Seconds of ocean motion so far.
+    ocean_time: f32 = 0,
+};
+pub const FluidState = struct {
+    time_owed: f32 = 0,
+    scene: Scene,
+    desc: FluidDesc,
+    sources: [gpu.max_fluid_sources]FluidSource = @splat(.{}),
+    source_count: u32 = 0,
+    obstacles: [gpu.max_fluid_obstacles]FluidObstacle = undefined,
+    obstacle_count: u32 = 0,
+    size: [3]u32 = .{ 0, 0, 0 },
+    tiles_x: u32 = 1,
+    /// Each a sheet of slices. Velocity and the scalars (smoke, heat, fuel)
+    /// alternate between two textures; `current` is the newer.
+    velocity: [2]rhi.Texture = undefined,
+    scalars: [2]rhi.Texture = undefined,
+    pressure: [2]rhi.Texture = undefined,
+    divergence: rhi.Texture = undefined,
+    curl: rhi.Texture = undefined,
+    /// 1 in the cells inside an obstacle.
+    solid: rhi.Texture = undefined,
+    /// The advection's first guess at the scalars.
+    carried: rhi.Texture = undefined,
+    /// The same for the velocity, when `sharp_velocity` is on.
+    carried_velocity: rhi.Texture = undefined,
+    current: u32 = 0,
+    pressure_current: u32 = 0,
+    cleared: bool = false,
+    /// The flattened picture `fluids.image` hands out, once asked for.
+    picture: ?rhi.Texture = null,
+    picture_drawn: bool = false,
+    /// The sheet `fluids.recordFlipbook` fills, and its progress.
+    flipbook: ?rhi.Texture = null,
+    flipbook_desc: FluidFlipbookDesc = .{},
+    flipbook_frame: [2]u32 = .{ 0, 0 },
+    flipbook_recorded: u32 = 0,
+    flipbook_wait: u32 = 0,
+    /// Key of what the solid mask was last drawn from; 0 for never.
+    mask_key: u64 = 0,
+    /// Address of this frame's description on the GPU; 0 until simulated.
+    params: u64 = 0,
+    params_frame: u64 = std.math.maxInt(u64),
+
+    pub fn setSources(self: *FluidState, sources: []const FluidSource) void {
+        self.source_count = @intCast(sources.len);
+        @memcpy(self.sources[0..sources.len], sources);
+        self.desc.sources = &.{};
+        self.obstacle_count = @intCast(self.desc.obstacles.len);
+        @memcpy(self.obstacles[0..self.desc.obstacles.len], self.desc.obstacles);
+        self.desc.obstacles = &.{};
+    }
+
+    /// Order matters: 4 to 6 hold one number per cell, 8 is the mask.
+    pub fn textures(self: *FluidState) [11]*rhi.Texture {
+        return .{ &self.velocity[0], &self.velocity[1], &self.scalars[0], &self.scalars[1], &self.pressure[0], &self.pressure[1], &self.divergence, &self.curl, &self.solid, &self.carried, &self.carried_velocity };
+    }
+};
+pub const OitTargets = struct { accumulation: rhi.Texture, reveal: rhi.Texture };
+pub const PeelTargets = struct { layer: rhi.Texture, accumulation: rhi.Texture, depth: [2]rhi.Texture };
+pub const shade_plain_targets = [_]rhi.ColorTarget{ .{ .format = hdr_format }, .{ .format = .rg16_float } };
+pub const shade_reflective_targets = [_]rhi.ColorTarget{ .{ .format = hdr_format }, .{ .format = .rg16_float }, .{ .format = hdr_format }, .{ .format = hdr_format } };
+pub const InstanceGroupData = struct {
+    scene: Scene,
+    model: Model,
+    transforms: []Mat4,
+    /// One packed color per copy, or empty for no tint.
+    tints: []u32 = &.{},
+    /// One set of shader parameters per copy, or empty for zeros.
+    params: [][4]f32 = &.{},
+    /// The entity whose pose every copy takes; see `instances.followPose`.
+    driver: ?Entity = null,
+    /// First GPU instance index, and GPU instances per copy; set when the
+    /// layout is rebuilt.
+    base: u32 = 0,
+    per_copy: u32 = 0,
+    impostor: ?ImpostorState = null,
+};
+
+pub const ImpostorState = struct {
+    /// The model's color and normals from 64 directions, a tile each.
+    color: rhi.Texture,
+    normal: rhi.Texture,
+    pixels: f32,
+    resolution: u32,
+    baked: bool = false,
+};
+pub const InstanceSlot = struct {
+    buffer: ?rhi.Buffer = null,
+    capacity: u32 = 0,
+    static_version: u64 = std.math.maxInt(u64),
+    /// `SceneData.entity_capacity` the instance groups' records were written at.
+    entity_base: usize = 0,
+};
+
+pub const EmitterData = struct {
+    scene: Scene,
+    desc: EmitterDesc,
+    buffer: rhi.Buffer,
+    capacity: u32,
+    /// Next slot to spawn into; slots are reused in a ring.
+    cursor: u32 = 0,
+    pending: f32 = 0,
+    /// Sort order for sorted emitters: one entry per slot, padded to 2^n.
+    order: ?rhi.Buffer = null,
+    order_count: u32 = 0,
+    /// Trail positions: `trail_points` per slot, the newest at `trail_head`;
+    /// `trail_clock` counts toward the next one.
+    trail: ?rhi.Buffer = null,
+    trail_points: u32 = 0,
+    trail_head: u32 = 0,
+    trail_clock: f32 = 0,
+    warmed: bool = false,
+    /// Scene shift since the particles were last simulated.
+    shift: Vec3 = .{ 0, 0, 0 },
+    /// Address of this frame's parameters on the GPU; 0 until simulated.
+    frame_params: u64 = 0,
+};
+/// A reflection probe and its capture state.
+pub const ProbeData = struct {
+    scene: Scene,
+    desc: ReflectionProbeDesc,
+    target: rhi.Texture,
+    view: View,
+    cubes: EnvironmentEntry,
+    dirty: bool = true,
+    waited: u32 = 0,
+    /// The next of the six faces to capture; 0 when idle.
+    face: u32 = 0,
+    /// Being captured: it is left out of its own pictures.
+    capturing: bool = false,
+    captured: bool = false,
+};
+pub const PickPending = struct { pixel: [2]u32, scene: Scene, layout_version: u64, depth_terms: [4]f32 };
+
+/// What a read-back copy of a scene's seen instances describes.
+pub const SeenTag = struct { layout_version: u64 = 0, count: u32 = 0, valid: bool = false };
+pub const ImageEntry = struct { texture: rhi.Texture, index: u32, id: u32 };
+
+pub const StreamFrustum = struct {
+    view: Mat4,
+    tan_x: f32,
+    tan_y: f32,
+
+    pub fn touches(self: StreamFrustum, center: Vec3, radius: f32) bool {
+        const p = math.transformPoint(self.view, center);
+        const depth = -p[2];
+        if (depth + radius < 0) return false;
+        const out_x = (@abs(p[0]) - depth * self.tan_x) / @sqrt(1 + self.tan_x * self.tan_x);
+        const out_y = (@abs(p[1]) - depth * self.tan_y) / @sqrt(1 + self.tan_y * self.tan_y);
+        return out_x < radius and out_y < radius;
+    }
+};
+
+/// What Basis Universal textures are transcoded to on this device: the
+/// block formats it reads, else plain texels.
+pub fn basisTarget(caps: rhi.Capabilities) ktx2.BasisTarget {
+    return if (caps.bc_textures) .bc else if (caps.astc_textures) .astc else .rgba;
+}
+
+pub fn blockFormat(block: gltf.Image.Block, one_channel: bool, two_channel: bool, srgb: bool) rhi.Format {
+    return switch (block) {
+        .bc1 => if (srgb) .bc1_srgb else .bc1_unorm,
+        .bc3 => if (srgb) .bc3_srgb else .bc3_unorm,
+        .bc6h => .bc6h_ufloat,
+        .rgba8 => if (srgb) .rgba8_srgb else .rgba8_unorm,
+        .astc4x4 => if (srgb) .astc_4x4_srgb else .astc_4x4_unorm,
+        .bc7 => if (one_channel) .bc4_unorm else if (two_channel) .bc5_unorm else if (srgb) .bc7_srgb else .bc7_unorm,
+    };
+}
+
+/// What texture streaming reads of one mesh of a model, in instance order.
+pub const StreamPart = struct {
+    /// Texture coordinate change per meter on the mesh; 0 or less skips it.
+    density: f32,
+    center: Vec3,
+    radius: f32,
+    /// The node it hangs from; null for a skinned mesh.
+    node: ?u32,
+    /// Streamed images its material uses, and the base-2 logarithm of
+    /// their larger side.
+    streams: [5]u32 = @splat(gpu.invalid_id),
+    log_sizes: [5]f32 = @splat(0),
+};
+
+pub const TextureStream = struct {
+    /// The whole BC7 mip chain; empty for textures that are not streamed.
+    data: []u8 = &.{},
+    width: u32 = 0,
+    height: u32 = 0,
+    levels: u32 = 0,
+    srgb: bool = false,
+    two_channel: bool = false,
+    block: gltf.Image.Block = .bc7,
+    one_channel: bool = false,
+    /// With levels read from the asset cache on demand: the whole chain's
+    /// size, the offset in it where `data` begins, and the cache file.
+    total: usize = 0,
+    tail_offset: usize = 0,
+    path: []u8 = &.{},
+    /// Coarsest first level allowed: this and below always stay loaded.
+    floor: u32 = 0,
+    /// First level in GPU memory now, and the one the views ask for.
+    resident: u32 = 0,
+    wanted: u32 = 0,
+    low_frames: u32 = 0,
+
+    pub fn levelSize(self: TextureStream, level: u32) usize {
+        return @intCast(self.format().dataSize(@max(self.width >> @intCast(level), 1), @max(self.height >> @intCast(level), 1)));
+    }
+
+    pub fn format(self: TextureStream) rhi.Format {
+        return blockFormat(self.block, self.one_channel, self.two_channel, self.srgb);
+    }
+
+    pub fn levelOffset(self: TextureStream, level: u32) usize {
+        var offset: usize = 0;
+        for (0..level) |index| offset += self.levelSize(@intCast(index));
+        return offset;
+    }
+
+    pub fn bytesFrom(self: TextureStream, first: u32) u64 {
+        if (self.total != 0) return self.total - self.levelOffset(first);
+        return self.data.len - self.levelOffset(first);
+    }
+};
+
+pub const Zone = struct {
+    profiler: ?Profiler,
+    id: u64 = 0,
+
+    pub fn start(profiler: ?Profiler, name: [:0]const u8) Zone {
+        var zone = Zone{ .profiler = profiler };
+        if (profiler) |p| zone.id = p.begin(p.context, name);
+        return zone;
+    }
+
+    pub fn stop(self: Zone) void {
+        if (self.profiler) |p| p.end(p.context, self.id);
+    }
+};
+
+pub fn scaledExtent(resolution: EffectResolution, size: u32) u32 {
+    return @max(size >> @intFromEnum(resolution), 1);
+}
