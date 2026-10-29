@@ -37,3 +37,18 @@ addComponent V (migrate)       1000000   +118.099 ms           +118 ns/op
 removeComponent V (migrate)    1000000    +82.497 ms            +82 ns/op
 despawn                        1000000     +8.936 ms             +8 ns/op
 ```
+
+Tested on a MacBook Pro, Apple M4 Pro, 24GB, Tahoe 26.4:
+
+```log
+benchmark                         n      total_ms    ns/entity
+----------------------------------------------------------------
+spawn P+V                      1000000     44.586 ms             44 ns/op
+query iterate P+V              1000000      0.536 ms              0 ns/op
+chunked + columnSlice P        1000000      0.293 ms              0 ns/op
+getMut via query P             1000000      3.222 ms              3 ns/op
+spawnPrefab (same prefab)      1000000     39.771 ms             39 ns/op
+addComponent V (migrate)       1000000     56.832 ms             56 ns/op
+removeComponent V (migrate)    1000000     54.832 ms             54 ns/op
+despawn                        1000000      5.789 ms              5 ns/op
+```
