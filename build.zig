@@ -11,5 +11,7 @@ pub fn build(b: *std.Build) void {
     sdk.add("slime", @import("libs/slime/build.zig"));
     sdk.add("commands", @import("libs/commands/build.zig"));
     sdk.add("cli", @import("libs/cli/build.zig"));
+    sdk.add("logging", @import("libs/logging/build.zig"));
+    sdk.add("keybinds", @import("libs/keybinds/build.zig"));
     sdk.finish();
 }
