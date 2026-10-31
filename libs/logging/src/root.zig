@@ -68,7 +68,7 @@ pub fn nameThread(name: ?[]const u8) void {
 pub fn setLevel(comptime scope: @EnumLiteral(), level: ?Level) void {
     const state = &core.ScopeOf(scope).state;
     if (!state.registered.load(.acquire)) core.register(state);
-    state.level.store(if (level) |l| @intFromEnum(l) else core.inherit, .monotonic);
+    state.level.store(if (level) |l| @backingInt(l) else core.inherit, .monotonic);
 }
 
 /// The level set for `scope`, or null when it has the default level.
@@ -89,7 +89,7 @@ pub fn levelOfName(name: []const u8) ?Level {
 /// Sets the most detailed level of every scope without its own; null gives
 /// each logger the level its configuration says again.
 pub fn setDefaultLevel(level: ?Level) void {
-    core.default_level.store(if (level) |l| @intFromEnum(l) else core.inherit, .monotonic);
+    core.default_level.store(if (level) |l| @backingInt(l) else core.inherit, .monotonic);
 }
 
 pub fn defaultLevel() ?Level {

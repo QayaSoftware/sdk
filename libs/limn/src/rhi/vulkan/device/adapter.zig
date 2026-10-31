@@ -35,8 +35,8 @@ pub fn selectPhysicalDevice(
         const families = try instance.getPhysicalDeviceQueueFamilyPropertiesAlloc(physical, gpa);
         defer gpa.free(families);
         for (families, 0..) |family, index| {
-            if (family.queue_count == 0 or !family.queue_flags.graphics_bit or !family.queue_flags.compute_bit) continue;
-            if (surface != .null_handle and
+            if (family.queue_count == 0 or !family.queue_flags.graphics or !family.queue_flags.compute) continue;
+            if (surface != .null and
                 (try instance.getPhysicalDeviceSurfaceSupportKHR(physical, @intCast(index), surface)) != .true) continue;
             const score: u32 = switch (properties.device_type) {
                 .discrete_gpu => 4,
@@ -110,7 +110,7 @@ pub fn shadingRateTile(gpa: std.mem.Allocator, instance: dispatch.Instance, phys
     defer gpa.free(available);
     var found = false;
     for (available) |extension| {
-        if (std.mem.eql(u8, std.mem.sliceTo(&extension.extension_name, 0), vk.extensions.khr_fragment_shading_rate.name)) found = true;
+        if (std.mem.eql(u8, std.mem.sliceTo(&extension.extension_name, 0), vk.device_extensions.khr_fragment_shading_rate.name)) found = true;
     }
     if (!found) return 0;
     var rate = vk.PhysicalDeviceFragmentShadingRateFeaturesKHR{};
@@ -140,7 +140,7 @@ pub fn supportsMeshShaders(gpa: std.mem.Allocator, instance: dispatch.Instance, 
     defer gpa.free(available);
     var found = false;
     for (available) |extension| {
-        if (std.mem.eql(u8, std.mem.sliceTo(&extension.extension_name, 0), vk.extensions.ext_mesh_shader.name)) found = true;
+        if (std.mem.eql(u8, std.mem.sliceTo(&extension.extension_name, 0), vk.device_extensions.ext_mesh_shader.name)) found = true;
     }
     if (!found) return false;
     var mesh = vk.PhysicalDeviceMeshShaderFeaturesEXT{};

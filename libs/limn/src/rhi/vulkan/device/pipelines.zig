@@ -26,7 +26,7 @@ pub const CompiledPipeline = struct { handle: u64, compute: bool = false };
 pub fn adoptPipeline(self: *Device, compiled: CompiledPipeline, label: [:0]const u8) !types.Pipeline {
     self.lockResources();
     defer self.unlockResources();
-    const handle: vk.Pipeline = @enumFromInt(compiled.handle);
+    const handle: vk.Pipeline = @fromBackingInt(@intCast(compiled.handle));
     errdefer self.vkd.destroyPipeline(handle, null);
     setName(self, .pipeline, compiled.handle, label);
     return try self.pipelines.insert(.{ .handle = handle, .bind_point = if (compiled.compute) .compute else .graphics });
@@ -34,37 +34,37 @@ pub fn adoptPipeline(self: *Device, compiled: CompiledPipeline, label: [:0]const
 
 /// Frees a compiled pipeline that will not be adopted.
 pub fn discardPipeline(self: *const Device, compiled: CompiledPipeline) void {
-    self.vkd.destroyPipeline(@enumFromInt(compiled.handle), null);
+    self.vkd.destroyPipeline(@fromBackingInt(@intCast(compiled.handle)), null);
 }
 
 /// Compiles without registering. May be called from any thread, also
 /// during rendering; `gpa` must be safe to use there. At most 16 shader
 /// constants, 16 vertex attributes and 8 color targets.
 pub fn compileGraphicsPipeline(self: *const Device, gpa: std.mem.Allocator, desc: types.GraphicsPipelineDesc) !CompiledPipeline {
-    const vertex = if (desc.mesh == null) try shaderModule(self, gpa, desc.vertex) else .null_handle;
-    defer if (vertex != .null_handle) self.vkd.destroyShaderModule(vertex, null);
-    const mesh = if (desc.mesh) |bytes| try shaderModule(self, gpa, bytes) else .null_handle;
-    defer if (mesh != .null_handle) self.vkd.destroyShaderModule(mesh, null);
-    const task = if (desc.task) |bytes| try shaderModule(self, gpa, bytes) else .null_handle;
-    defer if (task != .null_handle) self.vkd.destroyShaderModule(task, null);
-    const fragment = if (desc.fragment) |bytes| try shaderModule(self, gpa, bytes) else .null_handle;
-    defer if (fragment != .null_handle) self.vkd.destroyShaderModule(fragment, null);
+    const vertex = if (desc.mesh == null) try shaderModule(self, gpa, desc.vertex) else .null;
+    defer if (vertex != .null) self.vkd.destroyShaderModule(vertex, null);
+    const mesh = if (desc.mesh) |bytes| try shaderModule(self, gpa, bytes) else .null;
+    defer if (mesh != .null) self.vkd.destroyShaderModule(mesh, null);
+    const task = if (desc.task) |bytes| try shaderModule(self, gpa, bytes) else .null;
+    defer if (task != .null) self.vkd.destroyShaderModule(task, null);
+    const fragment = if (desc.fragment) |bytes| try shaderModule(self, gpa, bytes) else .null;
+    defer if (fragment != .null) self.vkd.destroyShaderModule(fragment, null);
     var constant_entries: [max_constants]vk.SpecializationMapEntry = undefined;
     const constants = try specialization(desc.fragment_constants, &constant_entries);
     var stages: [3]vk.PipelineShaderStageCreateInfo = undefined;
     var geometry_stages: u32 = 0;
     if (desc.mesh == null) {
-        stages[0] = .{ .stage = .{ .vertex_bit = true }, .module = vertex, .p_name = "main" };
+        stages[0] = .{ .stage = .{ .vertex = true }, .module = vertex, .p_name = "main" };
         geometry_stages = 1;
     } else {
         if (desc.task != null) {
-            stages[0] = .{ .stage = .{ .task_bit_ext = true }, .module = task, .p_name = "main" };
+            stages[0] = .{ .stage = .{ .task_ext = true }, .module = task, .p_name = "main" };
             geometry_stages = 1;
         }
-        stages[geometry_stages] = .{ .stage = .{ .mesh_bit_ext = true }, .module = mesh, .p_name = "main" };
+        stages[geometry_stages] = .{ .stage = .{ .mesh_ext = true }, .module = mesh, .p_name = "main" };
         geometry_stages += 1;
     }
-    stages[geometry_stages] = .{ .stage = .{ .fragment_bit = true }, .module = fragment, .p_name = "main", .p_specialization_info = if (desc.fragment_constants.len != 0) &constants else null };
+    stages[geometry_stages] = .{ .stage = .{ .fragment = true }, .module = fragment, .p_name = "main", .p_specialization_info = if (desc.fragment_constants.len != 0) &constants else null };
 
     var attributes: [16]vk.VertexInputAttributeDescription = undefined;
     var binding = vk.VertexInputBindingDescription{ .binding = 0, .stride = 0, .input_rate = .vertex };
@@ -107,8 +107,8 @@ pub fn compileGraphicsPipeline(self: *const Device, gpa: std.mem.Allocator, desc
         .polygon_mode = .fill,
         .cull_mode = switch (desc.cull) {
             .none => .{},
-            .front => .{ .front_bit = true },
-            .back => .{ .back_bit = true },
+            .front => .{ .front = true },
+            .back => .{ .back = true },
         },
         .front_face = .counter_clockwise,
         .depth_bias_enable = if (depth_state.bias != null) .true else .false,
@@ -118,7 +118,7 @@ pub fn compileGraphicsPipeline(self: *const Device, gpa: std.mem.Allocator, desc
         .line_width = 1,
     };
     const multisample = vk.PipelineMultisampleStateCreateInfo{
-        .rasterization_samples = .{ .@"1_bit" = true },
+        .rasterization_samples = .{ .@"1" = true },
         .sample_shading_enable = .false,
         .min_sample_shading = 0,
         .alpha_to_coverage_enable = .false,
@@ -178,7 +178,7 @@ pub fn compileGraphicsPipeline(self: *const Device, gpa: std.mem.Allocator, desc
     var result: [1]vk.Pipeline = undefined;
     _ = try self.vkd.createGraphicsPipelines(self.pipeline_cache, &.{.{
         .p_next = if (self.caps.shading_rate_tile != 0) @as(?*const anyopaque, &shading_rate) else @as(?*const anyopaque, &rendering),
-        .flags = .{ .rendering_fragment_shading_rate_attachment_bit_khr = self.caps.shading_rate_tile != 0 },
+        .flags = .{ .rendering_fragment_shading_rate_attachment_khr = self.caps.shading_rate_tile != 0 },
         .stage_count = if (desc.fragment != null) geometry_stages + 1 else geometry_stages,
         .p_stages = &stages,
         .p_vertex_input_state = &vertex_input,
@@ -193,7 +193,7 @@ pub fn compileGraphicsPipeline(self: *const Device, gpa: std.mem.Allocator, desc
         .subpass = 0,
         .base_pipeline_index = -1,
     }}, null, &result);
-    return .{ .handle = @intFromEnum(result[0]) };
+    return .{ .handle = @backingInt(result[0]) };
 }
 
 /// Compiles on the calling thread and registers the pipeline.
@@ -212,11 +212,11 @@ pub fn compileComputePipeline(self: *const Device, gpa: std.mem.Allocator, desc:
     const constants = try specialization(desc.constants, &constant_entries);
     var result: [1]vk.Pipeline = undefined;
     _ = try self.vkd.createComputePipelines(self.pipeline_cache, &.{.{
-        .stage = .{ .stage = .{ .compute_bit = true }, .module = module, .p_name = "main", .p_specialization_info = &constants },
+        .stage = .{ .stage = .{ .compute = true }, .module = module, .p_name = "main", .p_specialization_info = &constants },
         .layout = self.pipeline_layout,
         .base_pipeline_index = -1,
     }}, null, &result);
-    return .{ .handle = @intFromEnum(result[0]), .compute = true };
+    return .{ .handle = @backingInt(result[0]), .compute = true };
 }
 
 const max_constants = 16;
@@ -254,7 +254,7 @@ pub fn pipelineResource(self: *Device, pipeline: types.Pipeline) *PipelineResour
 
 /// The shader stages push constants and the table of textures reach.
 pub fn shaderStages(self: *const Device) vk.ShaderStageFlags {
-    return .{ .vertex_bit = true, .fragment_bit = true, .compute_bit = true, .task_bit_ext = self.caps.mesh_shaders, .mesh_bit_ext = self.caps.mesh_shaders };
+    return .{ .vertex = true, .fragment = true, .compute = true, .task_ext = self.caps.mesh_shaders, .mesh_ext = self.caps.mesh_shaders };
 }
 
 fn shaderModule(self: *const Device, gpa: std.mem.Allocator, bytes: []const u8) !vk.ShaderModule {
@@ -278,7 +278,7 @@ pub fn persistPipelineCache(self: *Device) !void {
 }
 
 fn blendState(mode: types.BlendMode) vk.PipelineColorBlendAttachmentState {
-    const write_all = vk.ColorComponentFlags{ .r_bit = true, .g_bit = true, .b_bit = true, .a_bit = true };
+    const write_all = vk.ColorComponentFlags{ .r = true, .g = true, .b = true, .a = true };
     return switch (mode) {
         .none => .{
             .blend_enable = .false,

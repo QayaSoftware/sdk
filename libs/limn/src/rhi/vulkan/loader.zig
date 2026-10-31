@@ -22,7 +22,7 @@ pub fn acquire(io: std.Io) !void {
 /// Points volk at `libMoltenVK.dylib` next to the executable, or in an app
 /// bundle's Frameworks. MoltenVK is then the whole of Vulkan, without layers.
 fn bundledMoltenVk() bool {
-    if (comptime builtin.os.tag != .macos) return false;
+    if (comptime builtin.target.os.tag != .macos) return false;
     for ([_][*:0]const u8{ "@executable_path/libMoltenVK.dylib", "@executable_path/../Frameworks/libMoltenVK.dylib" }) |path| {
         const library = std.c.dlopen(path, .{ .LAZY = true }) orelse continue;
         const entry = std.c.dlsym(library, "vkGetInstanceProcAddr") orelse continue;
@@ -41,9 +41,9 @@ pub fn release(io: std.Io) void {
     if (references == 0) c.volkFinalize();
 }
 
-fn getInstanceProcAddr(handle: vk.Instance, name: [*:0]const u8) callconv(.c) vk.PfnVoidFunction {
+fn getInstanceProcAddr(handle: ?vk.Instance, name: [*:0]const u8) callconv(.c) vk.PfnVoidFunction {
     return @ptrCast(c.vkGetInstanceProcAddr.?(
-        @ptrFromInt(@intFromEnum(handle)),
+        @ptrCast(handle),
         name,
     ));
 }
@@ -59,15 +59,15 @@ pub fn base() dispatch.Base {
 pub fn instance(io: std.Io, handle: vk.Instance) dispatch.InstanceWrapper {
     mutex.lockUncancelable(io);
     defer mutex.unlock(io);
-    c.volkLoadInstanceOnly(@ptrFromInt(@intFromEnum(handle)));
+    c.volkLoadInstanceOnly(@ptrCast(handle));
     var table: c.VolkInstanceTable = undefined;
-    c.volkLoadInstanceTable(&table, @ptrFromInt(@intFromEnum(handle)));
+    c.volkLoadInstanceTable(&table, @ptrCast(handle));
     var result: dispatch.InstanceWrapper = undefined;
-    inline for (@typeInfo(dispatch.InstanceDispatch).@"struct".fields) |field| {
-        @field(result.dispatch, field.name) = if (@hasField(c.VolkInstanceTable, field.name))
-            @ptrCast(@field(table, field.name))
+    inline for (@typeInfo(dispatch.InstanceDispatch).@"struct".field_names) |field_name| {
+        @field(result.dispatch, field_name) = if (@hasField(c.VolkInstanceTable, field_name))
+            @ptrCast(@field(table, field_name))
         else
-            @ptrCast(getInstanceProcAddr(handle, field.name));
+            @ptrCast(getInstanceProcAddr(handle, field_name));
     }
     return result;
 }
@@ -88,13 +88,13 @@ pub fn device(io: std.Io, handle: vk.Device) dispatch.DeviceWrapper {
     mutex.lockUncancelable(io);
     defer mutex.unlock(io);
     var table: c.VolkDeviceTable = undefined;
-    c.volkLoadDeviceTable(&table, @ptrFromInt(@intFromEnum(handle)));
+    c.volkLoadDeviceTable(&table, @ptrCast(handle));
     var result: dispatch.DeviceWrapper = undefined;
-    inline for (@typeInfo(dispatch.DeviceDispatch).@"struct".fields) |field| {
-        @field(result.dispatch, field.name) = if (@hasField(c.VolkDeviceTable, field.name))
-            @ptrCast(@field(table, field.name))
-        else if (@hasDecl(c, field.name))
-            @ptrCast(@field(c, field.name))
+    inline for (@typeInfo(dispatch.DeviceDispatch).@"struct".field_names) |field_name| {
+        @field(result.dispatch, field_name) = if (@hasField(c.VolkDeviceTable, field_name))
+            @ptrCast(@field(table, field_name))
+        else if (@hasDecl(c, field_name))
+            @ptrCast(@field(c, field_name))
         else
             null;
     }

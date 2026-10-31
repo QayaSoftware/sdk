@@ -22,7 +22,7 @@ pub const Forms = struct {
     /// The font turns ra + halant into a reph.
     reph: bool = false,
     /// Consonants (by place in the block) with a below or post form.
-    below: std.StaticBitSet(128) = .initEmpty(),
+    below: std.bit_set.Static(128) = .empty,
 };
 
 /// One script's layout. Letters are given by place in the block (code point

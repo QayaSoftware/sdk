@@ -514,7 +514,7 @@ test "numbers read in one pass agree with std.fmt" {
         inline for (.{ f32, f64 }) |F| {
             var reader = Reader.init(text);
             const expected = try std.fmt.parseFloat(F, text);
-            const Bits = std.meta.Int(.unsigned, @bitSizeOf(F));
+            const Bits = @Int(.unsigned, @bitSizeOf(F));
             try testing.expectEqual(@as(Bits, @bitCast(expected)), @as(Bits, @bitCast(try reader.readFloat(F))));
         }
         inline for (.{ u8, i32, u64, i64 }) |I| {

@@ -12,7 +12,7 @@ fn isPlain(comptime T: type) bool {
         .int, .float => true,
         .array => |array| isPlain(array.child),
         .@"struct" => |info| info.layout == .@"extern" and blk: {
-            for (info.fields) |field| if (!isPlain(field.type)) break :blk false;
+            for (info.field_types) |field_type| if (!isPlain(field_type)) break :blk false;
             break :blk true;
         },
         else => false,
@@ -27,7 +27,7 @@ pub fn put(gpa: std.mem.Allocator, out: *std.ArrayList(u8), value: anytype) !voi
     if (comptime isPlain(T)) return out.appendSlice(gpa, std.mem.asBytes(&value));
     switch (@typeInfo(T)) {
         .bool => try out.append(gpa, @intFromBool(value)),
-        .@"enum" => try out.append(gpa, @intCast(@intFromEnum(value))),
+        .@"enum" => try out.append(gpa, @intCast(@backingInt(value))),
         .optional => {
             try out.append(gpa, @intFromBool(value != null));
             if (value) |inner| try put(gpa, out, inner);
@@ -40,7 +40,7 @@ pub fn put(gpa: std.mem.Allocator, out: *std.ArrayList(u8), value: anytype) !voi
                 try out.appendSlice(gpa, std.mem.sliceAsBytes(value));
             } else for (value) |item| try put(gpa, out, item);
         },
-        .@"struct" => |info| inline for (info.fields) |field| try put(gpa, out, @field(value, field.name)),
+        .@"struct" => |info| inline for (info.field_names) |field_name| try put(gpa, out, @field(value, field_name)),
         else => @compileError("cannot serialize " ++ @typeName(T)),
     }
 }
@@ -89,7 +89,7 @@ pub const Reader = struct {
             },
             .@"struct" => |info| {
                 var value: T = undefined;
-                inline for (info.fields) |field| @field(value, field.name) = try self.get(arena, field.type);
+                inline for (info.field_names, info.field_types) |field_name, field_type| @field(value, field_name) = try self.get(arena, field_type);
                 return value;
             },
             else => @compileError("cannot deserialize " ++ @typeName(T)),

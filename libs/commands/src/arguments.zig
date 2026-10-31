@@ -164,16 +164,16 @@ pub fn Choice(comptime E: type) type {
         }
 
         pub fn suggest(_: *const @This(), builder: *SuggestionBuilder) !void {
-            inline for (@typeInfo(E).@"enum".fields) |field| try builder.add(field.name);
+            inline for (@typeInfo(E).@"enum".field_names) |field_name| try builder.add(field_name);
         }
 
         pub fn describe(_: *const @This(), err: anyerror, writer: *Writer) Writer.Error!bool {
             if (err != error.InvalidChoice) return false;
-            const fields = @typeInfo(E).@"enum".fields;
+            const names = @typeInfo(E).@"enum".field_names;
             try writer.writeAll("Expected ");
-            inline for (fields, 0..) |field, i| {
-                if (i > 0) try writer.writeAll(if (i + 1 == fields.len) " or " else ", ");
-                try writer.writeAll(field.name);
+            inline for (names, 0..) |name, i| {
+                if (i > 0) try writer.writeAll(if (i + 1 == names.len) " or " else ", ");
+                try writer.writeAll(name);
             }
             return true;
         }
@@ -217,7 +217,7 @@ pub fn check(comptime K: type) void {
     if (!container or !@hasDecl(K, "Value") or !@hasDecl(K, "parse")) {
         @compileError("commands: " ++ @typeName(K) ++ " is not an argument type: it needs a `Value` type and a `parse` function");
     }
-    const params = @typeInfo(@TypeOf(K.parse)).@"fn".params.len;
+    const params = @typeInfo(@TypeOf(K.parse)).@"fn".param_types.len;
     if (params != 2 and params != 3) {
         @compileError("commands: " ++ @typeName(K) ++ ".parse takes the argument type and a *Reader, and maybe the source");
     }

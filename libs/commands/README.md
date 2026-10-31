@@ -101,7 +101,7 @@ A `Parse` can also be made on one thread and run on another. That suits checking
 
 ## Performance
 
-`zig build commands-performance -Doptimize=ReleaseFast`, on an Intel i7 12700F:
+`zig build commands-performance -Doptimize=fast`, on an Intel i7 12700F:
 
 ```
 parse tp <x> <y> <z>                       1000000       58.1 ns/op     17212343 ops/s
@@ -131,5 +131,5 @@ execute tp, 16 tasks at once               1000000       10.8 ns/op     92311666
 ```sh
 zig build commands-basic         # a small server console: tp, give, execute as/run, help, suggestions
 zig build commands-parallel      # many threads running commands at once, and parsing on one thread to run on another
-zig build commands-performance -Doptimize=ReleaseFast
+zig build commands-performance -Doptimize=fast
 ```

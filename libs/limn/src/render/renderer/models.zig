@@ -105,8 +105,8 @@ pub const Models = struct {
         const material_images: []MaterialTextures = if (textured) try self.internal.gpa.alloc(MaterialTextures, meshes.len) else &.{};
         errdefer self.internal.gpa.free(material_images);
         if (textured) for (material_images, meshes) |*into, mesh| {
-            inline for (@typeInfo(MaterialTextures).@"struct".fields) |field| {
-                if (field.type == ?api.Image) if (@field(mesh.textures, field.name)) |image| if (!self.images.valid(image)) return error.InvalidImage;
+            inline for (@typeInfo(MaterialTextures).@"struct".field_names) |field_name| {
+                if (@FieldType(MaterialTextures, field_name) == ?api.Image) if (@field(mesh.textures, field_name)) |image| if (!self.images.valid(image)) return error.InvalidImage;
             }
             into.* = mesh.textures;
         };

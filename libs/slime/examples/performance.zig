@@ -35,7 +35,7 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print(
         \\entity count: {d}  (pass a number as argv to change, e.g. zig build slime-performance -- 50000)
-        \\use ReleaseFast for meaningful numbers: zig build slime-performance -Doptimize=ReleaseFast
+        \\use -Doptimize=fast for meaningful numbers: zig build slime-performance -Doptimize=fast
         \\
         \\benchmark                         n      total_ms    ns/entity
         \\----------------------------------------------------------------

@@ -119,7 +119,7 @@ pub const LevelError = error{
 
 pub fn setLevelByName(name: []const u8, level: ?Level) LevelError!void {
     if (name.len > max_name) return error.NameTooLong;
-    const stored: u8 = if (level) |l| @intFromEnum(l) else inherit;
+    const stored: u8 = if (level) |l| @backingInt(l) else inherit;
     const locked = lock();
     defer unlock(locked);
     var scope = scopes;
@@ -158,7 +158,7 @@ pub fn levelOfName(name: []const u8) ?Level {
 }
 
 pub fn toLevel(stored: u8) ?Level {
-    return if (stored == inherit) null else @enumFromInt(stored);
+    return if (stored == inherit) null else @fromBackingInt(@intCast(stored));
 }
 
 /// Copies the names of the scopes that have logged into `buffer`.

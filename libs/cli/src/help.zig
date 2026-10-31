@@ -79,17 +79,17 @@ pub fn writeHelp(comptime T: type, writer: *Writer, target: Target) Writer.Error
     try writer.writeAll("Show this help\n");
 
     if (comptime analysis.command) |command| {
-        const fields = @typeInfo(command.Union).@"union".fields;
+        const names = @typeInfo(command.Union).@"union".field_names;
         try writer.writeAll("\nCommands:\n");
         const command_width = comptime width: {
             var widest: usize = 0;
-            for (fields) |field| widest = @max(widest, field.name.len);
+            for (names) |field_name| widest = @max(widest, field_name.len);
             break :width widest;
         };
-        inline for (fields) |field| {
-            if (comptime spec.option(spec.metaOf(command.Union, field.name), "hidden", false)) continue;
-            const name = comptime value.kebab(field.name);
-            const about = comptime spec.commandHelp(command.Union, field.name);
+        inline for (names) |field_name| {
+            if (comptime spec.option(spec.metaOf(command.Union, field_name), "hidden", false)) continue;
+            const name = comptime value.kebab(field_name);
+            const about = comptime spec.commandHelp(command.Union, field_name);
             try writer.writeAll("  " ++ name);
             if (about.len > 0) {
                 try writer.splatByteAll(' ', command_width - name.len + 2);

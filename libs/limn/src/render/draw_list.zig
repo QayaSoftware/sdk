@@ -183,7 +183,7 @@ const Mode = enum(u32) {
 };
 
 fn pack(mode: Mode, texture: u32) u32 {
-    return @intFromEnum(mode) << 24 | (texture & 0x00ff_ffff);
+    return @backingInt(mode) << 24 | (texture & 0x00ff_ffff);
 }
 
 /// Twice the signed area of triangle a, b, c.
@@ -436,7 +436,7 @@ pub const Quad = extern struct {
     fn from(corners: [4]Vertex) ?Quad {
         const c = corners;
         inline for (1..4) |index| {
-            if (@as(u32, @bitCast(c[index].color)) != @as(u32, @bitCast(c[0].color))) return null;
+            if (!std.meta.eql(c[index].color, c[0].color)) return null;
             if (c[index].offset[0] != c[0].offset[0] or c[index].offset[1] != c[0].offset[1]) return null;
             if (c[index].position[2] != 0) return null;
         }

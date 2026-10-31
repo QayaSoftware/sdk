@@ -80,7 +80,7 @@ pub const FileSink = struct {
     /// one is too big.
     pub fn after(self: *FileSink, level: std.log.Level, flush_level: std.log.Level, elapsed: u64, interval: u64) void {
         if (self.file == null) return;
-        if (@intFromEnum(level) <= @intFromEnum(flush_level) or elapsed -| self.flushed_at >= interval) {
+        if (@backingInt(level) <= @backingInt(flush_level) or elapsed -| self.flushed_at >= interval) {
             self.flush();
             self.flushed_at = elapsed;
         }

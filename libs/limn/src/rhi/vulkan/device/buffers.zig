@@ -21,19 +21,19 @@ pub fn createBuffer(self: *Device, desc: types.BufferDesc) !types.Buffer {
     const handle = try self.vkd.createBuffer(&.{
         .size = desc.size,
         .usage = .{
-            .storage_buffer_bit = desc.usage.storage,
-            .index_buffer_bit = desc.usage.index,
-            .vertex_buffer_bit = desc.usage.vertex,
-            .indirect_buffer_bit = desc.usage.indirect,
-            .acceleration_structure_build_input_read_only_bit_khr = desc.usage.acceleration_input and self.caps.ray_tracing,
-            .acceleration_structure_storage_bit_khr = desc.usage.acceleration_storage and self.caps.ray_tracing,
-            .transfer_src_bit = desc.usage.copy_src,
-            .transfer_dst_bit = true,
-            .shader_device_address_bit = true,
+            .storage_buffer = desc.usage.storage,
+            .index_buffer = desc.usage.index,
+            .vertex_buffer = desc.usage.vertex,
+            .indirect_buffer = desc.usage.indirect,
+            .acceleration_structure_build_input_read_only_khr = desc.usage.acceleration_input and self.caps.ray_tracing,
+            .acceleration_structure_storage_khr = desc.usage.acceleration_storage and self.caps.ray_tracing,
+            .transfer_src = desc.usage.copy_src,
+            .transfer_dst = true,
+            .shader_device_address = true,
         },
         .sharing_mode = .exclusive,
     }, null);
-    setName(self, .buffer, @intFromEnum(handle), desc.name);
+    setName(self, .buffer, @backingInt(handle), desc.name);
     errdefer self.vkd.destroyBuffer(handle, null);
     const allocation = try self.allocator.allocate(memory.bufferNeeds(self.vkd, handle), switch (desc.memory) {
         .gpu => .gpu,

@@ -237,7 +237,7 @@ test "contexts decide what fires, and leaving one lets go without firing" {
     try tracker.release(key(.escape), 4);
     try chord(&tracker, &.{key(.space)}, 5);
     try chord(&tracker, &.{key(.escape)}, 6);
-    tracker.setContexts(.initEmpty());
+    tracker.setContexts(.empty);
     try chord(&tracker, &.{key(.space)}, 7);
     try expectEvents(&tracker, &.{ .{ .sprint, .press, 2 }, .{ .back, .release, 6 }, .{ .jump, .press, 7 } });
 }

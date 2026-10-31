@@ -107,10 +107,10 @@ fn deinitValue(comptime T: type, value: *T, gpa: Allocator) void {
     if (!@hasDecl(T, "deinit")) return;
     const Fn = @TypeOf(T.deinit);
     if (@typeInfo(Fn) != .@"fn") return;
-    const params = @typeInfo(Fn).@"fn".params;
+    const params = @typeInfo(Fn).@"fn".param_types;
     if (params.len == 1) {
         value.deinit();
-    } else if (params.len == 2 and params[1].type == Allocator) {
+    } else if (params.len == 2 and params[1] == Allocator) {
         value.deinit(gpa);
     }
 }

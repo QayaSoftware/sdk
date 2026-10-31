@@ -493,7 +493,7 @@ pub fn simulateFluids(renderer: *Renderer, cmd: *rhi.CommandEncoder, scene: *Sce
             .fuel_keep = @exp(-@max(desc.burn_rate, 0) * dt),
             .heat = desc.heat,
             .soot = desc.soot,
-            .walls = @intFromEnum(desc.walls),
+            .walls = @backingInt(desc.walls),
             .source_count = state.source_count,
             .wind = desc.wind,
             .absorption = @max(desc.absorption, 0),

@@ -14,7 +14,7 @@ const android_api = 29;
 
 b: *std.Build,
 target: std.Build.ResolvedTarget,
-optimize: std.builtin.OptimizeMode,
+optimize: std.lang.Optimize,
 test_step: *std.Build.Step,
 check_step: *std.Build.Step,
 docs_step: *std.Build.Step,
@@ -37,14 +37,15 @@ pub fn create(b: *std.Build) *Sdk {
         .docs_step = b.step("docs", "Generate API documentation in zig-out/docs"),
         .docs_trim = b.addExecutable(.{
             .name = "docs_trim",
-            .root_module = b.createModule(.{ .root_source_file = b.path("build/docs_trim.zig"), .target = b.graph.host, .optimize = .ReleaseSafe }),
+            .root_module = b.createModule(.{ .root_source_file = b.path("build/docs_trim.zig"), .target = b.graph.host, .optimize = .safe }),
         }),
         .ready = !target.result.abi.isAndroid() or useAndroidNdk(b, target),
     };
     const cross_step = b.step("cross", "Build everything for every target, into zig-out/cross/<target>");
     var previous: ?*std.Build.Step = null;
     for (cross_targets) |cross_target| {
-        const cross = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "install", b.fmt("-Dtarget={s}", .{cross_target}), "--prefix", b.pathFromRoot(b.fmt("zig-out/cross/{s}", .{cross_target})) });
+        const cross = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "install", b.fmt("-Dtarget={s}", .{cross_target}), "--prefix", b.fmt("zig-out/cross/{s}", .{cross_target}) });
+        cross.setCwd(b.path("."));
         cross.has_side_effects = true;
         if (previous) |step| cross.step.dependOn(step);
         previous = &cross.step;
@@ -101,7 +102,7 @@ pub const Library = struct {
     /// Where the library is in the SDK: libs/<name>.
     root: []const u8,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     /// The library's module, named after it, from src/root.zig.
     module: *std.Build.Module,
     /// The library built from `module`, which its docs come from.
@@ -116,7 +117,7 @@ pub const Library = struct {
 
     /// `sub_path` in the library, as an absolute path.
     pub fn pathFromRoot(lib: *Library, sub_path: []const u8) []const u8 {
-        return lib.b.pathFromRoot(lib.b.pathJoin(&.{ lib.root, sub_path }));
+        return absolutePath(lib.b, lib.b.pathJoin(&.{ lib.root, sub_path }));
     }
 
     /// A top-level step named <library>-<name>.
@@ -162,7 +163,7 @@ pub const Library = struct {
         b.installArtifact(exe);
         lib.addCheck(exe);
         const run = b.addRunArtifact(exe);
-        if (b.args) |args| run.addArgs(args);
+        run.addPassthruArgs();
         lib.step(name, description).dependOn(&run.step);
         return exe;
     }
@@ -171,8 +172,8 @@ pub const Library = struct {
         const b = lib.b;
         const docs = lib.artifact.getEmittedDocs();
         const trim = b.addRunArtifact(lib.sdk.docs_trim);
-        trim.addFileArg(docs.path(b, "sources.tar"));
-        const sources = trim.addOutputFileArg("sources.tar");
+        trim.addFileArg2(docs.path(b, "sources.tar"), .{});
+        const sources = trim.addOutputFileArg2("sources.tar", .{});
         trim.addArg(lib.name);
         trim.addArgs(lib.documented.items);
         for ([_][]const u8{ "index.html", "main.js", "main.wasm" }) |file| {
@@ -182,29 +183,58 @@ pub const Library = struct {
     }
 };
 
-/// Writes a libc file for the fetched NDK's Bionic sysroot for `target`,
-/// which `applyAndroidLibc` hands to the Android compilations. Returns
-/// false while the NDK is being fetched.
+/// `sub_path` in `b`'s package, as an absolute path, for what is kept past
+/// the build: a dependency's root is relative to where the build runs.
+pub fn absolutePath(b: *std.Build, sub_path: []const u8) []const u8 {
+    const root = b.root.root_dir.path orelse ".";
+    const resolved = std.Io.Dir.cwd().realPathFileAlloc(b.graph.io, root, b.allocator) catch |err| std.debug.panic("cannot resolve {s}: {t}", .{ root, err });
+    return b.pathJoin(&.{ resolved, b.root.sub_path, sub_path });
+}
+
+/// Whether the file at the absolute `path` exists, and has the build
+/// configured again when that changes: a missing file is watched for
+/// through the nearest directory above it that exists.
+pub fn fileExists(b: *std.Build, path: []const u8) bool {
+    const io = b.graph.io;
+    if (std.Io.Dir.cwd().access(io, path, .{})) |_| {
+        b.dependOnFileMetadata(.{ .cwd_relative = path });
+        return true;
+    } else |_| {}
+    var parent = std.fs.path.dirname(path);
+    while (parent) |directory| : (parent = std.fs.path.dirname(directory)) {
+        std.Io.Dir.cwd().access(io, directory, .{}) catch continue;
+        b.dependOnDirectoryContents(.{ .cwd_relative = directory });
+        break;
+    }
+    return false;
+}
+
+/// Has build/android_libc.zig write a libc file for the fetched NDK's Bionic
+/// sysroot for `target`, which `applyAndroidLibc` hands to the Android
+/// compilations. Returns false while the NDK is being fetched.
 fn useAndroidNdk(b: *std.Build, target: std.Build.ResolvedTarget) bool {
     const ndk = b.lazyDependency("android_ndk", .{}) orelse return false;
-    const sysroot = ndk.path("toolchains/llvm/prebuilt/linux-x86_64/sysroot").getPath(b);
+    const sysroot = ndk.path("toolchains/llvm/prebuilt/linux-x86_64/sysroot");
     const triple = switch (target.result.cpu.arch) {
         .x86_64 => "x86_64-linux-android",
         else => "aarch64-linux-android",
     };
-    const text = b.fmt("include_dir={s}/usr/include\nsys_include_dir={s}/usr/include/{s}\ncrt_dir={s}/usr/lib/{s}/{d}\nmsvc_lib_dir=\nkernel32_lib_dir=\ngcc_dir=\n", .{ sysroot, sysroot, triple, sysroot, triple, android_api });
-    const path = b.cache_root.join(b.allocator, &.{ "android", b.fmt("{s}.libc", .{triple}) }) catch @panic("OOM");
-    b.cache_root.handle.createDirPath(b.graph.io, "android") catch |err| std.debug.panic("cannot write the Android libc file: {t}", .{err});
-    b.cache_root.handle.writeFile(b.graph.io, .{ .sub_path = b.fmt("android/{s}.libc", .{triple}), .data = text }) catch |err| std.debug.panic("cannot write the Android libc file: {t}", .{err});
-    android_libc = path;
-    android_libraries = b.fmt("{s}/usr/lib/{s}/{d}", .{ sysroot, triple, android_api });
+    const tool = b.addExecutable(.{
+        .name = "android_libc",
+        .root_module = b.createModule(.{ .root_source_file = b.path("build/android_libc.zig"), .target = b.graph.host, .optimize = .safe }),
+    });
+    const write = b.addRunArtifact(tool);
+    write.addDirectoryArg2(sysroot, .{});
+    write.addArgs(&.{ triple, b.fmt("{d}", .{android_api}) });
+    android_libc = write.addOutputFileArg2(b.fmt("{s}.libc", .{triple}), .{});
+    android_libraries = sysroot.path(b, b.fmt("usr/lib/{s}/{d}", .{ triple, android_api }));
     return true;
 }
 
-/// The libc file `useAndroidNdk` wrote, and where the NDK keeps the system
-/// libraries, for `applyAndroidLibc`.
-var android_libc: []const u8 = "";
-var android_libraries: []const u8 = "";
+/// The libc file `useAndroidNdk` has written, and where the NDK keeps the
+/// system libraries, for `applyAndroidLibc`.
+var android_libc: std.Build.LazyPath = undefined;
+var android_libraries: std.Build.LazyPath = undefined;
 
 /// Gives every Android compilation the build can reach, its packages'
 /// included, the NDK's libc; tools built for the build machine keep its own.
@@ -219,8 +249,9 @@ fn visitAndroidLibc(b: *std.Build, step: *std.Build.Step, seen: *std.AutoHashMap
     if ((seen.getOrPut(b.allocator, step) catch @panic("OOM")).found_existing) return;
     if (step.cast(std.Build.Step.Compile)) |compile| {
         if (compile.rootModuleTarget().abi.isAndroid()) {
-            compile.setLibCFile(.{ .cwd_relative = android_libc });
-            compile.root_module.addLibraryPath(.{ .cwd_relative = android_libraries });
+            compile.setLibCFile(android_libc);
+            compile.root_module.addLibraryPath(android_libraries);
+            if (compile.kind == .exe or compile.kind == .@"test") compile.root_module.addObjectFile(android_libraries.path(b, "libc.so"));
         }
         var modules: std.AutoHashMapUnmanaged(*std.Build.Module, void) = .empty;
         visitModule(b, compile.root_module, &modules, seen);

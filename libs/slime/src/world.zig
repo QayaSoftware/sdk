@@ -317,7 +317,7 @@ pub const World = struct {
 
         pub fn spawn(self: Commands, bundle: anytype) Allocator.Error!void {
             const types = comptime registry.bundleTypes(@TypeOf(bundle));
-            var copies: std.meta.Tuple(types) = undefined;
+            var copies: @Tuple(types) = undefined;
             var size: usize = 1 + @sizeOf(u16);
             inline for (types, 0..) |T, i| {
                 copies[i] = bundle[i];

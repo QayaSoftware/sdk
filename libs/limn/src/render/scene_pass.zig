@@ -178,7 +178,7 @@ pub const ScenePass = struct {
 
     /// `size` at an effect's fraction of the view's resolution.
     pub fn scaled(resolution: render.EffectResolution, size: u32) u32 {
-        return @max(size >> @intFromEnum(resolution), 1);
+        return @max(size >> @backingInt(resolution), 1);
     }
 };
 

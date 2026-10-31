@@ -531,7 +531,7 @@ pub fn encodeBlock(block: *const [16][4]u8) [16]u8 {
             bits = best_bits;
         }
     }
-    return @bitCast(std.mem.nativeToLittle(u128, bits));
+    return @bitCast(bits);
 }
 
 fn interpolate(e0: Vec, e1: Vec, index: u8) Vec {
@@ -552,7 +552,7 @@ fn blockError(colors: *const [16]Vec, e0: Endpoint, e1: Endpoint, indices: *cons
 
 /// Decodes a mode 1 or mode 6 block. Test only.
 pub fn decodeBlock(data: [16]u8) [16][4]u8 {
-    const bits = std.mem.littleToNative(u128, @bitCast(data));
+    const bits: u128 = @bitCast(data);
     if (bits & 0b11 == 0b10) return decodeTwoGroups(bits);
     std.debug.assert(bits & 0x7f == 1 << 6);
     var position: u7 = 7;

@@ -11,7 +11,7 @@ Low-dependency Zig libraries for games and applications.
 | [logging](libs/logging) | A `std.log` backend for terminals, log files and engines |
 | [keybinds](libs/keybinds) | Virtual keybindings: chords, sequences, gestures, axes and rebinding |
 
-Requires Zig 0.16.
+Requires Zig 0.17.
 
 ```sh
 zig fetch --save git+https://github.com/QayaSoftware/sdk

@@ -707,12 +707,12 @@ const Checks = struct {
             .{ .stage = .sun_shadow, .context = &seen, .run = readingPass },
         };
         for (0..2) |_| _ = try self.renderer.render(.{ .views = &.{.{ .scene = self.scene, .camera = self.camera, .target = .{ .texture = self.target }, .passes = passes }}, .delta_time = 1.0 / 60.0 });
-        if (seen.stages[@intFromEnum(gfx.PassStage.after_opaque)] != 2 or seen.stages[@intFromEnum(gfx.PassStage.after_resolve)] != 2) return error.ScenePassNotRun;
-        if (seen.stages[@intFromEnum(gfx.PassStage.sun_shadow)] < 2) return error.ShadowPassNotRun;
+        if (seen.stages[@backingInt(gfx.PassStage.after_opaque)] != 2 or seen.stages[@backingInt(gfx.PassStage.after_resolve)] != 2) return error.ScenePassNotRun;
+        if (seen.stages[@backingInt(gfx.PassStage.sun_shadow)] < 2) return error.ShadowPassNotRun;
         if (!seen.visibility or !seen.ambient_occlusion) return error.PassReadsMissing;
         if (seen.unasked) return error.PassGotUnaskedReads;
         try self.draw(2);
-        std.log.info("scene passes: run after opaque, after resolve and into {d} sun cascades, with the textures they read", .{seen.stages[@intFromEnum(gfx.PassStage.sun_shadow)]});
+        std.log.info("scene passes: run after opaque, after resolve and into {d} sun cascades, with the textures they read", .{seen.stages[@backingInt(gfx.PassStage.sun_shadow)]});
     }
 
     fn plainViewPasses(self: *Checks) !void {
@@ -787,7 +787,7 @@ const Checks = struct {
         const device = renderer.device;
         const triangle = [_][3]f32{ .{ 0, 0, 0 }, .{ 1, 0, 0 }, .{ 0, 1, 0 } };
         const indices = [_]u32{ 0, 1, 2 };
-        const pixels = [_]u8{200} ** (16 * 16 * 4);
+        const pixels: [16 * 16 * 4]u8 = @splat(200);
         var failures: usize = 0;
         for (0..rounds) |round| {
             device.failGpuAllocation(@intCast(round));
@@ -839,7 +839,7 @@ const Seen = struct {
 
 fn readingPass(context: ?*anyopaque, pass: gfx.PassContext) anyerror!void {
     const seen: *Seen = @ptrCast(@alignCast(context.?));
-    seen.stages[@intFromEnum(pass.stage)] += 1;
+    seen.stages[@backingInt(pass.stage)] += 1;
     if (pass.stage == .after_opaque) {
         seen.visibility = seen.visibility or pass.visibility != null;
         seen.ambient_occlusion = seen.ambient_occlusion or pass.ambient_occlusion != null;
@@ -902,6 +902,7 @@ pub fn main(init: std.process.Init) !void {
     while (names.next()) |name| {
         if (std.mem.eql(u8, name, "--no-ray-tracing")) ray_tracing = false else try only.append(init.gpa, name);
     }
+    try std.Io.Dir.cwd().createDirPath(init.io, cache_dir);
     var failing = FailingAllocator{ .backing = init.gpa };
     const renderer = try gfx.Renderer.init(failing.allocator(), init.io, .{
         .application_name = "limn checks",

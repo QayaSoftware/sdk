@@ -138,8 +138,8 @@ pub fn Logger(comptime config: Config) type {
         pub fn enabled(level: Level, state: *const core.Scope) bool {
             var max = state.level.load(.monotonic);
             if (max == core.inherit) max = core.default_level.load(.monotonic);
-            if (max == core.inherit) max = @intFromEnum(config.level);
-            return @intFromEnum(level) <= max;
+            if (max == core.inherit) max = @backingInt(config.level);
+            return @backingInt(level) <= max;
         }
 
         /// Logs only the first time this level, scope and format are logged.

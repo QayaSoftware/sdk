@@ -110,7 +110,7 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print(
         \\runs per benchmark: {d}  (pass a number to change it, e.g. zig build commands-performance -- 5000000)
-        \\use ReleaseFast for meaningful numbers: zig build commands-performance -Doptimize=ReleaseFast
+        \\use -Doptimize=fast for meaningful numbers: zig build commands-performance -Doptimize=fast
         \\
         \\
     , .{n});

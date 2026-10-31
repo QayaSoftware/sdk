@@ -81,7 +81,7 @@ pub fn markReadOnly(gpa: std.mem.Allocator, words: []const u32) ![]u32 {
     while (at < words.len) {
         const count: usize = words[at] >> 16;
         if (count == 0 or at + count > words.len) return gpa.dupe(u32, words);
-        const op: Op = @enumFromInt(@as(u16, @truncate(words[at])));
+        const op: Op = @fromBackingInt(@intCast(@as(u16, @truncate(words[at]))));
         const operands = words[at + 1 .. at + count];
         switch (op) {
             .type_pointer => {
@@ -150,7 +150,7 @@ pub fn markReadOnly(gpa: std.mem.Allocator, words: []const u32) ![]u32 {
             const key = (@as(u64, target.*) << 32) | member;
             if (decorated.contains(key)) continue;
             try decorated.put(gpa, key, {});
-            try added.appendSlice(gpa, &.{ (4 << 16) | @as(u32, @intFromEnum(Op.member_decorate)), target.*, @intCast(member), non_writable });
+            try added.appendSlice(gpa, &.{ (4 << 16) | @as(u32, @backingInt(Op.member_decorate)), target.*, @intCast(member), non_writable });
         }
     }
     const insert = if (annotations_end != 0) annotations_end else first_type;
@@ -163,7 +163,7 @@ pub fn markReadOnly(gpa: std.mem.Allocator, words: []const u32) ![]u32 {
 }
 
 fn isDeclaration(op: Op) bool {
-    const code = @intFromEnum(op);
+    const code = @backingInt(op);
     return (code >= 19 and code <= 39) or (code >= 41 and code <= 52) or code == 71 or code == 72 or code == 74 or code == 75 or code == 332 or code == 5632 or code == 5633;
 }
 
@@ -209,7 +209,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn instruction(comptime op: Op, comptime operands: []const u32) [1 + operands.len]u32 {
-    return [1]u32{(@as(u32, operands.len + 1) << 16) | @intFromEnum(op)} ++ operands[0..operands.len].*;
+    return [1]u32{(@as(u32, operands.len + 1) << 16) | @backingInt(op)} ++ operands[0..operands.len].*;
 }
 
 test "structs only read through a pointer become NonWritable, written ones stay" {
@@ -237,7 +237,7 @@ test "structs only read through a pointer become NonWritable, written ones stay"
     var found: usize = 0;
     var at: usize = 5;
     while (at < marked.len) : (at += marked[at] >> 16) {
-        if ((marked[at] & 0xffff) != @intFromEnum(Op.member_decorate)) continue;
+        if ((marked[at] & 0xffff) != @backingInt(Op.member_decorate)) continue;
         try std.testing.expectEqual(@as(u32, read_struct), marked[at + 1]);
         try std.testing.expectEqual(@as(u32, non_writable), marked[at + 3]);
         decorations[found] = marked[at + 2];

@@ -48,7 +48,7 @@ pub const Surface = struct {
 pub const DeviceDesc = struct {
     application_name: [:0]const u8 = "limn",
     /// Khronos and synchronization validation; needs the layers installed.
-    validation: bool = builtin.mode == .Debug,
+    validation: bool = builtin.mode == .debug,
     /// Substring of the adapter name to prefer, for multi-GPU machines.
     preferred_device: ?[]const u8 = null,
     /// Null for headless use.
@@ -501,7 +501,7 @@ pub const Work = struct {
     /// What was recorded after `earlier`, a count taken from the same encoder.
     pub fn since(self: Work, earlier: Work) Work {
         var result: Work = .{};
-        inline for (std.meta.fields(Work)) |field| @field(result, field.name) = @field(self, field.name) - @field(earlier, field.name);
+        inline for (@typeInfo(Work).@"struct".field_names) |field_name| @field(result, field_name) = @field(self, field_name) - @field(earlier, field_name);
         return result;
     }
 };

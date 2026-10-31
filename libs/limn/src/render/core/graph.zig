@@ -196,7 +196,7 @@ pub const Graph = struct {
         if (self.node_count == max_targets) return error.TooManyTargets;
         self.nodes[self.node_count] = value;
         self.node_count += 1;
-        return @enumFromInt(self.node_count - 1);
+        return @fromBackingInt(@intCast(self.node_count - 1));
     }
 
     /// A texture that exists outside the graph. It may hold a picture
@@ -215,18 +215,18 @@ pub const Graph = struct {
     /// graph stay with that work.
     pub fn importBuffer(self: *Graph, buffer: rhi.Buffer) !Resource {
         for (self.buffers[0..self.buffer_count], 0..) |known, index| {
-            if (known.buffer == buffer) return @enumFromInt(index);
+            if (known.buffer == buffer) return @fromBackingInt(@intCast(index));
         }
         if (self.buffer_count == max_resources) return error.TooManyTargets;
         self.buffers[self.buffer_count] = .{ .buffer = buffer };
         self.buffer_count += 1;
-        return @enumFromInt(self.buffer_count - 1);
+        return @fromBackingInt(@intCast(self.buffer_count - 1));
     }
 
     /// Asks for what is written into `resource` to be made: passes that
     /// lead to it run.
     pub fn wantBuffer(self: *Graph, resource: Resource) void {
-        self.buffers[@intFromEnum(resource)].wanted = true;
+        self.buffers[@backingInt(resource)].wanted = true;
     }
 
     pub fn publish(self: *Graph, name: Slot, target: Target) void {
@@ -239,13 +239,13 @@ pub const Graph = struct {
 
     /// Asks for `target` to be made: passes that lead to it run.
     pub fn want(self: *Graph, target: Target) void {
-        self.nodes[@intFromEnum(target)].wanted = true;
+        self.nodes[@backingInt(target)].wanted = true;
     }
 
     /// The texture behind `target`. For a transient target, only inside a
     /// pass that names it.
     pub fn texture(self: *const Graph, target: Target) rhi.Texture {
-        return self.nodes[@intFromEnum(target)].texture.?;
+        return self.nodes[@backingInt(target)].texture.?;
     }
 
     fn link(self: *Graph, items: []const Target) !Span {
@@ -274,7 +274,7 @@ pub const Graph = struct {
         var from = rhi.BufferAccess{};
         var to = rhi.BufferAccess{};
         for (self.used(pass.uses)) |use| {
-            const made = &self.buffers[@intFromEnum(use.resource)];
+            const made = &self.buffers[@backingInt(use.resource)];
             const reads = use.access.reads();
             const unseen: rhi.BufferAccess = @bitCast(@as(u16, @bitCast(reads)) & ~@as(u16, @bitCast(made.visible)));
             if (!made.written.empty() and (!unseen.empty() or use.access.writes())) {
@@ -287,7 +287,7 @@ pub const Graph = struct {
             }
         }
         for (self.used(pass.uses)) |use| {
-            const made = &self.buffers[@intFromEnum(use.resource)];
+            const made = &self.buffers[@backingInt(use.resource)];
             if (use.access.writes()) {
                 made.written = @bitCast(@as(u16, @bitCast(use.access)) & ~@as(u16, @bitCast(use.access.reads())));
                 made.visible = .{};
@@ -339,7 +339,7 @@ pub const Graph = struct {
         var sorted: [max_passes]u8 = undefined;
         for (0..self.pass_count) |index| {
             var place = index;
-            while (place > 0 and @intFromEnum(self.passes[sorted[place - 1]].stage) > @intFromEnum(self.passes[index].stage)) : (place -= 1)
+            while (place > 0 and @backingInt(self.passes[sorted[place - 1]].stage) > @backingInt(self.passes[index].stage)) : (place -= 1)
                 sorted[place] = sorted[place - 1];
             sorted[place] = @intCast(index);
         }
@@ -357,21 +357,21 @@ pub const Graph = struct {
             position -= 1;
             const pass = &self.passes[sorted[position]];
             var runs = pass.always;
-            for (self.linked(pass.writes)) |target| runs = runs or needed[@intFromEnum(target)];
-            for (self.colored(pass.color)) |color| runs = runs or needed[@intFromEnum(color.target)];
-            if (pass.depth) |depth| runs = runs or needed[@intFromEnum(depth.target)];
-            for (self.used(pass.uses)) |use| runs = runs or (use.access.writes() and needed_buffers[@intFromEnum(use.resource)]);
+            for (self.linked(pass.writes)) |target| runs = runs or needed[@backingInt(target)];
+            for (self.colored(pass.color)) |color| runs = runs or needed[@backingInt(color.target)];
+            if (pass.depth) |depth| runs = runs or needed[@backingInt(depth.target)];
+            for (self.used(pass.uses)) |use| runs = runs or (use.access.writes() and needed_buffers[@backingInt(use.resource)]);
             if (!runs) continue;
             live[position] = true;
-            for (self.linked(pass.reads)) |target| needed[@intFromEnum(target)] = true;
+            for (self.linked(pass.reads)) |target| needed[@backingInt(target)] = true;
             for (self.used(pass.uses)) |use| {
-                if (!use.access.reads().empty()) needed_buffers[@intFromEnum(use.resource)] = true;
+                if (!use.access.reads().empty()) needed_buffers[@backingInt(use.resource)] = true;
             }
             for (self.colored(pass.color)) |color| {
-                if (color.load == .load) needed[@intFromEnum(color.target)] = true;
+                if (color.load == .load) needed[@backingInt(color.target)] = true;
             }
             if (pass.depth) |depth| {
-                if (depth.load == .load) needed[@intFromEnum(depth.target)] = true;
+                if (depth.load == .load) needed[@backingInt(depth.target)] = true;
             }
         }
 
@@ -383,22 +383,22 @@ pub const Graph = struct {
             const pass = &self.passes[index];
             const step: u16 = @intCast(result.count);
             for (self.linked(pass.reads)) |target| {
-                if (!drawn[@intFromEnum(target)]) return error.ReadBeforeDrawn;
+                if (!drawn[@backingInt(target)]) return error.ReadBeforeDrawn;
                 self.touch(target, step);
             }
             for (self.colored(pass.color)) |color| {
-                if (color.load == .load and !drawn[@intFromEnum(color.target)]) return error.ReadBeforeDrawn;
+                if (color.load == .load and !drawn[@backingInt(color.target)]) return error.ReadBeforeDrawn;
                 self.touch(color.target, step);
-                drawn[@intFromEnum(color.target)] = true;
+                drawn[@backingInt(color.target)] = true;
             }
             if (pass.depth) |depth| {
-                if (depth.load == .load and !drawn[@intFromEnum(depth.target)]) return error.ReadBeforeDrawn;
+                if (depth.load == .load and !drawn[@backingInt(depth.target)]) return error.ReadBeforeDrawn;
                 self.touch(depth.target, step);
-                drawn[@intFromEnum(depth.target)] = true;
+                drawn[@backingInt(depth.target)] = true;
             }
             for (self.linked(pass.writes)) |target| {
                 self.touch(target, step);
-                drawn[@intFromEnum(target)] = true;
+                drawn[@backingInt(target)] = true;
             }
             result.order[result.count] = index;
             result.count += 1;
@@ -407,7 +407,7 @@ pub const Graph = struct {
     }
 
     fn touch(self: *Graph, target: Target, step: u16) void {
-        const made = &self.nodes[@intFromEnum(target)];
+        const made = &self.nodes[@backingInt(target)];
         if (made.transient == null) return;
         if (!made.used) {
             made.first = step;
@@ -507,8 +507,8 @@ test "passes run by stage, and those nothing asks for are left out" {
     try graph.add(.{ .name = "simulate", .stage = .prepare, .always = true }, &trace, skip);
     const planned = try graph.plan();
     try std.testing.expectEqualSlices(u8, &.{ 4, 3, 2, 0 }, planned.passes());
-    try std.testing.expectEqual(@as(u16, 1), graph.nodes[@intFromEnum(lit)].first);
-    try std.testing.expectEqual(@as(u16, 3), graph.nodes[@intFromEnum(lit)].last);
+    try std.testing.expectEqual(@as(u16, 1), graph.nodes[@backingInt(lit)].first);
+    try std.testing.expectEqual(@as(u16, 3), graph.nodes[@backingInt(lit)].last);
 }
 
 test "a pass cannot read a pooled target before it is drawn" {

@@ -377,7 +377,7 @@ fn noteChanges(scene: *SceneData, geometry: u64) void {
         lighting.update(std.mem.asBytes(&light.range));
         lighting.update(std.mem.asBytes(&light.inner_angle));
         lighting.update(std.mem.asBytes(&light.outer_angle));
-        lighting.update(&.{@intFromEnum(light.kind)});
+        lighting.update(&.{@backingInt(light.kind)});
     }
     const lighting_key = lighting.final();
     const unsteady = scene.fluids.items.len != 0 or scene.clouds != null;

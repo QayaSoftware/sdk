@@ -493,7 +493,7 @@ pub fn acquireLibraries(io: std.Io) void {
     defer library_mutex.unlock(io);
     if (library_references == 0) {
         zmesh.init(std.heap.smp_allocator);
-        zstbi.init(io, std.heap.smp_allocator);
+        zstbi.init(std.heap.smp_allocator) catch unreachable;
     }
     library_references += 1;
 }
@@ -546,7 +546,7 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, path: []const u8, options: LoadO
     const parse_options = gltf.Options{ .memory = parser_memory };
     const data = try gltf.parse(parse_options, bytes);
     defer gltf.free(data);
-    const path_z = try gpa.dupeZ(u8, path);
+    const path_z = try gpa.dupeSentinel(u8, path, 0);
     defer gpa.free(path_z);
     try gltf.loadBuffers(parse_options, data, path_z.ptr);
     try checkRequired(data);

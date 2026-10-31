@@ -296,7 +296,7 @@ pub fn Dispatcher(comptime Source: type) type {
                     .describe = if (@hasDecl(K, "describe")) describeError else null,
                 };
 
-                const takes_source = @typeInfo(@TypeOf(K.parse)).@"fn".params.len == 3;
+                const takes_source = @typeInfo(@TypeOf(K.parse)).@"fn".param_types.len == 3;
 
                 fn parseValue(state: *const anyopaque, reader: *Reader, source: *const Source, out: *anyopaque) anyerror!void {
                     const kind: *const K = @ptrCast(@alignCast(state));
@@ -370,7 +370,7 @@ pub fn Dispatcher(comptime Source: type) type {
         pub fn configure(self: *Self, node: Node, options: Options) RegisterError!void {
             const target = self.data(node);
             if (options.redirect) |redirect| {
-                std.debug.assert(@intFromEnum(redirect.target) < self.nodes.items.len);
+                std.debug.assert(@backingInt(redirect.target) < self.nodes.items.len);
                 if (target.literals.items.len + target.arguments.items.len > 0) return error.Redirected;
                 target.options.redirect = redirect;
             }
@@ -386,12 +386,12 @@ pub fn Dispatcher(comptime Source: type) type {
 
         fn addChild(self: *Self, parent: Node, name: []const u8, arg: ?Argument, index: usize, options: Options) RegisterError!Node {
             if (self.data(parent).options.redirect != null) return error.Redirected;
-            if (options.redirect) |redirect| std.debug.assert(@intFromEnum(redirect.target) < self.nodes.items.len);
+            if (options.redirect) |redirect| std.debug.assert(@backingInt(redirect.target) < self.nodes.items.len);
             const owned = try self.arena.allocator().dupe(u8, name);
             try self.nodes.ensureUnusedCapacity(self.gpa, 1);
             const owner = self.data(parent);
             if (arg == null) try owner.literals.ensureUnusedCapacity(self.gpa, 1) else try owner.arguments.ensureUnusedCapacity(self.gpa, 1);
-            const node: Node = @enumFromInt(self.nodes.items.len);
+            const node: Node = @fromBackingInt(@intCast(self.nodes.items.len));
             self.nodes.appendAssumeCapacity(.{ .name = owned, .parent = parent, .argument = arg, .options = options });
             if (arg == null) owner.literals.insertAssumeCapacity(index, .{ .name = owned, .node = node }) else owner.arguments.appendAssumeCapacity(node);
             return node;
@@ -402,7 +402,7 @@ pub fn Dispatcher(comptime Source: type) type {
         }
 
         fn data(self: *const Self, node: Node) *Data {
-            return &self.nodes.items[@intFromEnum(node)];
+            return &self.nodes.items[@backingInt(node)];
         }
 
         fn lowerBound(literals: []const Literal, name: []const u8) usize {

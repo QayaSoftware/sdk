@@ -452,7 +452,7 @@ pub const CommandEncoder = struct {
     /// Clears a rectangle of the depth attachment of the pass being drawn.
     pub fn clearDepthRect(self: *CommandEncoder, x: u32, y: u32, width: u32, height: u32, value: f32) void {
         self.device.vkd.cmdClearAttachments(self.command, &.{.{
-            .aspect_mask = .{ .depth_bit = true },
+            .aspect_mask = .{ .depth = true },
             .color_attachment = 0,
             .clear_value = .{ .depth_stencil = .{ .depth = value, .stencil = 0 } },
         }}, &.{.{
@@ -769,18 +769,18 @@ pub const CommandEncoder = struct {
     /// of this frame or one still in flight, are done with it.
     fn rayQueryBarrier(self: *CommandEncoder) void {
         self.waitMemory(.{
-            .src_stage_mask = .{ .compute_shader_bit = true, .fragment_shader_bit = true },
-            .dst_stage_mask = .{ .acceleration_structure_build_bit_khr = true },
+            .src_stage_mask = .{ .compute_shader = true, .fragment_shader = true },
+            .dst_stage_mask = .{ .acceleration_structure_build_khr = true },
         });
     }
 
     /// Makes builds visible to later builds and to ray queries.
     fn accelerationBarrier(self: *CommandEncoder) void {
         self.waitMemory(.{
-            .src_stage_mask = .{ .acceleration_structure_build_bit_khr = true },
-            .src_access_mask = .{ .acceleration_structure_write_bit_khr = true },
-            .dst_stage_mask = .{ .acceleration_structure_build_bit_khr = true, .compute_shader_bit = true, .fragment_shader_bit = true },
-            .dst_access_mask = .{ .acceleration_structure_read_bit_khr = true, .acceleration_structure_write_bit_khr = true },
+            .src_stage_mask = .{ .acceleration_structure_build_khr = true },
+            .src_access_mask = .{ .acceleration_structure_write_khr = true },
+            .dst_stage_mask = .{ .acceleration_structure_build_khr = true, .compute_shader = true, .fragment_shader = true },
+            .dst_access_mask = .{ .acceleration_structure_read_khr = true, .acceleration_structure_write_khr = true },
         });
     }
 
@@ -798,7 +798,7 @@ pub const CommandEncoder = struct {
         if (taken < device_module.max_timing_scopes) {
             index = taken;
             frame.scopes[index] = .{ .name = name, .depth = self.scope_depth, .work = self.work };
-            self.device.vkd.cmdWriteTimestamp2(self.command, .{ .all_commands_bit = true }, frame.query_pool, index * 2);
+            self.device.vkd.cmdWriteTimestamp2(self.command, .{ .all_commands = true }, frame.query_pool, index * 2);
         }
         self.scope_stack[self.scope_depth] = index;
         self.scope_depth += 1;
@@ -813,7 +813,7 @@ pub const CommandEncoder = struct {
         const index = self.scope_stack[self.scope_depth];
         if (index == std.math.maxInt(u32)) return;
         frame.scopes[index].work = self.work.since(frame.scopes[index].work);
-        self.device.vkd.cmdWriteTimestamp2(self.command, .{ .all_commands_bit = true }, frame.query_pool, index * 2 + 1);
+        self.device.vkd.cmdWriteTimestamp2(self.command, .{ .all_commands = true }, frame.query_pool, index * 2 + 1);
     }
 
     fn frameData(self: *CommandEncoder) ?*FrameData {
@@ -908,16 +908,16 @@ const AccessInfo = struct { stage: vk.PipelineStageFlags2, access: vk.AccessFlag
 /// in acceleration structure reads when there is ray tracing, for ray
 /// queries; `mesh_shaders` adds the task and mesh stages to graphics.
 fn bufferAccessInfo(uses: types.BufferAccess, ray_tracing: bool, mesh_shaders: bool) AccessInfo {
-    const graphics = vk.PipelineStageFlags2{ .vertex_shader_bit = true, .fragment_shader_bit = true, .task_shader_bit_ext = mesh_shaders, .mesh_shader_bit_ext = mesh_shaders };
-    const shader_read = vk.AccessFlags2{ .shader_read_bit = true, .acceleration_structure_read_bit_khr = ray_tracing };
+    const graphics = vk.PipelineStageFlags2{ .vertex_shader = true, .fragment_shader = true, .task_shader_ext = mesh_shaders, .mesh_shader_ext = mesh_shaders };
+    const shader_read = vk.AccessFlags2{ .shader_read = true, .acceleration_structure_read_khr = ray_tracing };
     var info = AccessInfo{ .stage = .{}, .access = .{} };
     if (uses.compute_read) {
-        info.stage = info.stage.merge(.{ .compute_shader_bit = true });
+        info.stage = info.stage.merge(.{ .compute_shader = true });
         info.access = info.access.merge(shader_read);
     }
     if (uses.compute_write) {
-        info.stage = info.stage.merge(.{ .compute_shader_bit = true });
-        info.access = info.access.merge(.{ .shader_write_bit = true });
+        info.stage = info.stage.merge(.{ .compute_shader = true });
+        info.access = info.access.merge(.{ .shader_write = true });
     }
     if (uses.graphics_read) {
         info.stage = info.stage.merge(graphics);
@@ -925,39 +925,39 @@ fn bufferAccessInfo(uses: types.BufferAccess, ray_tracing: bool, mesh_shaders: b
     }
     if (uses.graphics_write) {
         info.stage = info.stage.merge(graphics);
-        info.access = info.access.merge(.{ .shader_write_bit = true });
+        info.access = info.access.merge(.{ .shader_write = true });
     }
     if (uses.indirect) {
-        info.stage = info.stage.merge(.{ .draw_indirect_bit = true });
-        info.access = info.access.merge(.{ .indirect_command_read_bit = true });
+        info.stage = info.stage.merge(.{ .draw_indirect = true });
+        info.access = info.access.merge(.{ .indirect_command_read = true });
     }
     if (uses.index) {
-        info.stage = info.stage.merge(.{ .index_input_bit = true });
-        info.access = info.access.merge(.{ .index_read_bit = true });
+        info.stage = info.stage.merge(.{ .index_input = true });
+        info.access = info.access.merge(.{ .index_read = true });
     }
     if (uses.vertex_input) {
-        info.stage = info.stage.merge(.{ .vertex_attribute_input_bit = true });
-        info.access = info.access.merge(.{ .vertex_attribute_read_bit = true });
+        info.stage = info.stage.merge(.{ .vertex_attribute_input = true });
+        info.access = info.access.merge(.{ .vertex_attribute_read = true });
     }
     if (uses.transfer_read) {
-        info.stage = info.stage.merge(.{ .all_transfer_bit = true });
-        info.access = info.access.merge(.{ .transfer_read_bit = true });
+        info.stage = info.stage.merge(.{ .all_transfer = true });
+        info.access = info.access.merge(.{ .transfer_read = true });
     }
     if (uses.transfer_write) {
-        info.stage = info.stage.merge(.{ .all_transfer_bit = true });
-        info.access = info.access.merge(.{ .transfer_write_bit = true });
+        info.stage = info.stage.merge(.{ .all_transfer = true });
+        info.access = info.access.merge(.{ .transfer_write = true });
     }
     if (ray_tracing and uses.build_read) {
-        info.stage = info.stage.merge(.{ .acceleration_structure_build_bit_khr = true });
-        info.access = info.access.merge(.{ .acceleration_structure_read_bit_khr = true, .shader_read_bit = true });
+        info.stage = info.stage.merge(.{ .acceleration_structure_build_khr = true });
+        info.access = info.access.merge(.{ .acceleration_structure_read_khr = true, .shader_read = true });
     }
     if (ray_tracing and uses.build_write) {
-        info.stage = info.stage.merge(.{ .acceleration_structure_build_bit_khr = true });
-        info.access = info.access.merge(.{ .acceleration_structure_write_bit_khr = true });
+        info.stage = info.stage.merge(.{ .acceleration_structure_build_khr = true });
+        info.access = info.access.merge(.{ .acceleration_structure_write_khr = true });
     }
     if (uses.host_read) {
-        info.stage = info.stage.merge(.{ .host_bit = true });
-        info.access = info.access.merge(.{ .host_read_bit = true });
+        info.stage = info.stage.merge(.{ .host = true });
+        info.access = info.access.merge(.{ .host_read = true });
     }
     return info;
 }
@@ -970,43 +970,43 @@ fn stateInfo(state: types.TextureState, mesh_shaders: bool) StateInfo {
         .undefined => .{ .layout = .undefined, .stage = .{}, .access = .{} },
         .shader_read => .{
             .layout = .read_only_optimal,
-            .stage = .{ .vertex_shader_bit = true, .fragment_shader_bit = true, .compute_shader_bit = true, .task_shader_bit_ext = mesh_shaders, .mesh_shader_bit_ext = mesh_shaders },
-            .access = .{ .shader_read_bit = true },
+            .stage = .{ .vertex_shader = true, .fragment_shader = true, .compute_shader = true, .task_shader_ext = mesh_shaders, .mesh_shader_ext = mesh_shaders },
+            .access = .{ .shader_read = true },
         },
         .color_attachment => .{
             .layout = .attachment_optimal,
-            .stage = .{ .color_attachment_output_bit = true },
-            .access = .{ .color_attachment_read_bit = true, .color_attachment_write_bit = true },
+            .stage = .{ .color_attachment_output = true },
+            .access = .{ .color_attachment_read = true, .color_attachment_write = true },
         },
         .depth_attachment => .{
             .layout = .attachment_optimal,
-            .stage = .{ .early_fragment_tests_bit = true, .late_fragment_tests_bit = true },
-            .access = .{ .depth_stencil_attachment_read_bit = true, .depth_stencil_attachment_write_bit = true },
+            .stage = .{ .early_fragment_tests = true, .late_fragment_tests = true },
+            .access = .{ .depth_stencil_attachment_read = true, .depth_stencil_attachment_write = true },
         },
         .copy_src => .{
             .layout = .transfer_src_optimal,
-            .stage = .{ .all_transfer_bit = true },
-            .access = .{ .transfer_read_bit = true },
+            .stage = .{ .all_transfer = true },
+            .access = .{ .transfer_read = true },
         },
         .copy_dst => .{
             .layout = .transfer_dst_optimal,
-            .stage = .{ .all_transfer_bit = true },
-            .access = .{ .transfer_write_bit = true },
+            .stage = .{ .all_transfer = true },
+            .access = .{ .transfer_write = true },
         },
         .storage => .{
             .layout = .general,
-            .stage = .{ .vertex_shader_bit = true, .fragment_shader_bit = true, .compute_shader_bit = true, .task_shader_bit_ext = mesh_shaders, .mesh_shader_bit_ext = mesh_shaders },
-            .access = .{ .shader_storage_read_bit = true, .shader_storage_write_bit = true },
+            .stage = .{ .vertex_shader = true, .fragment_shader = true, .compute_shader = true, .task_shader_ext = mesh_shaders, .mesh_shader_ext = mesh_shaders },
+            .access = .{ .shader_storage_read = true, .shader_storage_write = true },
         },
         .external => .{
             .layout = .general,
-            .stage = .{ .all_commands_bit = true },
-            .access = .{ .memory_read_bit = true, .memory_write_bit = true },
+            .stage = .{ .all_commands = true },
+            .access = .{ .memory_read = true, .memory_write = true },
         },
         .shading_rate => .{
             .layout = .fragment_shading_rate_attachment_optimal_khr,
-            .stage = .{ .fragment_shading_rate_attachment_bit_khr = true },
-            .access = .{ .fragment_shading_rate_attachment_read_bit_khr = true },
+            .stage = .{ .fragment_shading_rate_attachment_khr = true },
+            .access = .{ .fragment_shading_rate_attachment_read_khr = true },
         },
         .present => .{ .layout = .present_src_khr, .stage = .{}, .access = .{} },
     };
@@ -1026,7 +1026,7 @@ fn imageBarrier(
     const destination = stateInfo(to, mesh_shaders);
     const swapchain_image = resource.allocation == null;
     return .{
-        .src_stage_mask = if (from == .undefined and swapchain_image) .{ .all_commands_bit = true } else source.stage,
+        .src_stage_mask = if (from == .undefined and swapchain_image) .{ .all_commands = true } else source.stage,
         .src_access_mask = source.access,
         .dst_stage_mask = destination.stage,
         .dst_access_mask = destination.access,

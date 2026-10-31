@@ -63,7 +63,7 @@ fn ViewOf(comptime Feature: type) type {
 pub const ViewStates = blk: {
     var types: [list.len]type = undefined;
     for (list, 0..) |Feature, index| types[index] = ViewOf(Feature);
-    break :blk std.meta.Tuple(&types);
+    break :blk @Tuple(&types);
 };
 
 pub fn emptyViewStates() ViewStates {

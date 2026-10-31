@@ -37,7 +37,7 @@ pub fn parse(comptime V: type, arena: Allocator, text: []const u8) Error!V {
         .float => return std.fmt.parseFloat(V, text) catch error.InvalidValue,
         .bool => return parseBool(text) orelse error.InvalidValue,
         .@"enum" => |info| {
-            inline for (info.fields) |field| if (matches(field.name, text)) return @field(V, field.name);
+            inline for (info.field_names) |field_name| if (matches(field_name, text)) return @field(V, field_name);
             return error.InvalidValue;
         },
         else => comptime unreachable,
@@ -74,11 +74,11 @@ pub fn expected(comptime V: type) []const u8 {
 /// An enum's tags as written, joined by commas and `last` before the last.
 pub fn choices(comptime E: type, comptime last: []const u8) []const u8 {
     comptime {
-        const fields = @typeInfo(E).@"enum".fields;
+        const names = @typeInfo(E).@"enum".field_names;
         var text: []const u8 = "";
-        for (fields, 0..) |field, i| {
-            if (i > 0) text = text ++ (if (i + 1 == fields.len) last else ", ");
-            text = text ++ kebab(field.name);
+        for (names, 0..) |field_name, i| {
+            if (i > 0) text = text ++ (if (i + 1 == names.len) last else ", ");
+            text = text ++ kebab(field_name);
         }
         return text;
     }
@@ -132,8 +132,8 @@ pub fn write(comptime F: type, writer: *Writer, v: F) Writer.Error!void {
         .optional => |info| if (v) |child| try write(info.child, writer, child),
         .bool => try writer.writeAll(if (v) "true" else "false"),
         .int, .float => try writer.print("{d}", .{v}),
-        .@"enum" => |info| inline for (info.fields) |field| {
-            if (@field(F, field.name) == v) try writer.writeAll(comptime kebab(field.name));
+        .@"enum" => |info| inline for (info.field_names) |field_name| {
+            if (@field(F, field_name) == v) try writer.writeAll(comptime kebab(field_name));
         },
         .pointer => |info| for (v, 0..) |item, i| {
             if (i > 0) try writer.writeAll(", ");

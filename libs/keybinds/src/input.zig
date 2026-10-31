@@ -481,36 +481,36 @@ pub const Input = packed struct(u32) {
     };
 
     pub fn key(which: Key) Input {
-        return .{ .kind = .key, .code = @intFromEnum(which) };
+        return .{ .kind = .key, .code = @backingInt(which) };
     }
 
     pub fn mouse(which: Mouse) Input {
-        return .{ .kind = .mouse, .code = @intFromEnum(which) };
+        return .{ .kind = .mouse, .code = @backingInt(which) };
     }
 
     pub fn wheel(which: Wheel) Input {
-        return .{ .kind = .wheel, .code = @intFromEnum(which) };
+        return .{ .kind = .wheel, .code = @backingInt(which) };
     }
 
     pub fn button(which: Button) Input {
-        return .{ .kind = .button, .code = @intFromEnum(which) };
+        return .{ .kind = .button, .code = @backingInt(which) };
     }
 
     pub fn axis(which: Axis) Input {
-        return .{ .kind = .axis, .code = @intFromEnum(which) };
+        return .{ .kind = .axis, .code = @backingInt(which) };
     }
 
     /// `which` pushed past the press threshold towards its positive end.
     pub fn axisPositive(which: Axis) Input {
-        return .{ .kind = .axis_positive, .code = @intFromEnum(which) };
+        return .{ .kind = .axis_positive, .code = @backingInt(which) };
     }
 
     pub fn axisNegative(which: Axis) Input {
-        return .{ .kind = .axis_negative, .code = @intFromEnum(which) };
+        return .{ .kind = .axis_negative, .code = @backingInt(which) };
     }
 
     pub fn motion(which: Motion) Input {
-        return .{ .kind = .motion, .code = @intFromEnum(which) };
+        return .{ .kind = .motion, .code = @backingInt(which) };
     }
 
     pub fn custom(code: u16) Input {
@@ -568,8 +568,10 @@ pub const Input = packed struct(u32) {
 
     fn named(comptime E: type, text: []const u8) ?E {
         if (std.meta.stringToEnum(E, text)) |value| return value;
-        if (@hasDecl(E, "aliases")) return E.aliases.get(text);
-        return null;
+        return switch (E) {
+            Mouse, Button, Axis => E.aliases.get(text),
+            else => null,
+        };
     }
 
     /// Writes the name `parse` reads, as `ctrl`, `mouse:left` or `pad:rt+`.

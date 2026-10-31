@@ -28,7 +28,7 @@ jobs:
           echo "$HOME/slang/bin" >> "$GITHUB_PATH"
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - name: Formatting
         run: zig fmt --check build.zig build libs/limn libs/slime/build.zig
       - name: Compile everything and its tests
@@ -46,7 +46,7 @@ jobs:
           cache: true
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - name: Compile everything and its tests
         run: zig build check
       - name: Unit tests

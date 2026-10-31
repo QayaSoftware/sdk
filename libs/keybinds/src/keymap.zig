@@ -172,14 +172,14 @@ pub fn Keymap(comptime Action: type, comptime Context: type) type {
         fn add(self: *Self, made: Binding) Allocator.Error!BindingId {
             for (self.bindings.items, 0..) |*slot, index| if (slot.removed) {
                 slot.* = made;
-                return @enumFromInt(index);
+                return @fromBackingInt(@intCast(index));
             };
             try self.bindings.append(self.gpa, made);
-            return @enumFromInt(self.bindings.items.len - 1);
+            return @fromBackingInt(@intCast(self.bindings.items.len - 1));
         }
 
         pub fn unbind(self: *Self, id: BindingId) Allocator.Error!void {
-            self.bindings.items[@intFromEnum(id)].removed = true;
+            self.bindings.items[@backingInt(id)].removed = true;
             try self.rebuild();
         }
 
@@ -197,7 +197,7 @@ pub fn Keymap(comptime Action: type, comptime Context: type) type {
         }
 
         pub fn binding(self: *const Self, id: BindingId) *const Binding {
-            return &self.bindings.items[@intFromEnum(id)];
+            return &self.bindings.items[@backingInt(id)];
         }
 
         /// The bindings of `action`, in the order made.
@@ -380,7 +380,7 @@ pub fn Keymap(comptime Action: type, comptime Context: type) type {
                 } else if (std.mem.eql(u8, word, "priority")) {
                     made.priority = std.fmt.parseInt(i8, words.next() orelse return error.InvalidOption, 10) catch return error.InvalidOption;
                 } else if (std.mem.eql(u8, word, "when") or std.mem.eql(u8, word, "unless")) {
-                    var set: Contexts = .initEmpty();
+                    var set: Contexts = .empty;
                     while (words.next()) |context_name| {
                         at.* = column(line, context_name);
                         set.insert(enumNamed(ContextEnum, context_name) orelse return error.UnknownContext);
@@ -416,10 +416,10 @@ pub fn Keymap(comptime Action: type, comptime Context: type) type {
 
         /// Writes every binding as `load` reads it, by action.
         pub fn write(self: *const Self, writer: *Writer) Writer.Error!void {
-            inline for (@typeInfo(Action).@"enum".fields) |field| {
-                for (self.bindingsOf(@field(Action, field.name))) |id| {
+            inline for (@typeInfo(Action).@"enum".field_names) |field_name| {
+                for (self.bindingsOf(@field(Action, field_name))) |id| {
                     const b = self.binding(id);
-                    try writer.print("{s} = ", .{field.name});
+                    try writer.print("{s} = ", .{field_name});
                     try b.trigger.writeText(writer);
                     switch (b.gesture) {
                         .press => {},
@@ -489,7 +489,7 @@ pub fn Keymap(comptime Action: type, comptime Context: type) type {
                     const prefix = a.trigger.len != b.trigger.len;
                     if (!prefix and !a.trigger.eql(&b.trigger)) continue;
                     const shorter, const longer = if (a.trigger.len <= b.trigger.len) .{ i, j } else .{ j, i };
-                    try found.append(gpa, .{ .first = @enumFromInt(shorter), .second = @enumFromInt(longer), .prefix = prefix });
+                    try found.append(gpa, .{ .first = @fromBackingInt(@intCast(shorter)), .second = @fromBackingInt(@intCast(longer)), .prefix = prefix });
                 }
             }
             return found.toOwnedSlice(gpa);
@@ -505,7 +505,7 @@ pub fn Keymap(comptime Action: type, comptime Context: type) type {
             gpa: Allocator,
             /// Who this tracker is for, as a player number, given to events.
             caller: u32,
-            contexts: Contexts = .initEmpty(),
+            contexts: Contexts = .empty,
             generation: u64,
             /// The latest time fed; times before it count as it.
             now: u64 = 0,
@@ -623,7 +623,7 @@ pub fn Keymap(comptime Action: type, comptime Context: type) type {
                 var level: f32 = 0;
                 var moved: f32 = 0;
                 for (keymap.bindingsOf(action)) |id| {
-                    const index = @intFromEnum(id);
+                    const index = @backingInt(id);
                     const b = &keymap.bindings.items[index];
                     switch (b.kind) {
                         .digital => if (self.runs.items[index].phase == .active and b.gesture.holds()) {
@@ -1102,7 +1102,7 @@ pub fn Keymap(comptime Action: type, comptime Context: type) type {
                     .action = b.action,
                     .gesture = b.gesture,
                     .time = time,
-                    .binding = @enumFromInt(id),
+                    .binding = @fromBackingInt(@intCast(id)),
                     .caller = self.caller,
                     .repeat = repeat,
                 });
@@ -1176,11 +1176,11 @@ pub fn Keymap(comptime Action: type, comptime Context: type) type {
                 while (at > 0 and list.items[at - 1].priority < options.priority) at -= 1;
                 try list.insert(self.gpa, at, .{ .id = self.next_id, .priority = options.priority, .handler = handler });
                 self.next_id += 1;
-                return @enumFromInt(self.next_id - 1);
+                return @fromBackingInt(@intCast(self.next_id - 1));
             }
 
             pub fn off(self: *Handlers, id: Id) void {
-                for (&self.lists) |*list| for (list.items, 0..) |entry, at| if (entry.id == @intFromEnum(id)) {
+                for (&self.lists) |*list| for (list.items, 0..) |entry, at| if (entry.id == @backingInt(id)) {
                     _ = list.orderedRemove(at);
                     return;
                 };

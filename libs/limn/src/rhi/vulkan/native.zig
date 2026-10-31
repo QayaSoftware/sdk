@@ -28,12 +28,12 @@ pub const Image = struct {
 
 pub fn device(source: *const rhi.Device) Device {
     return .{
-        .instance = @intFromEnum(source.instance.handle),
-        .physical_device = @intFromEnum(source.physical),
-        .device = @intFromEnum(source.vkd.handle),
-        .queue = @intFromEnum(source.queue),
+        .instance = @intFromPtr(source.instance.handle),
+        .physical_device = @intFromPtr(source.physical),
+        .device = @intFromPtr(source.vkd.handle),
+        .queue = @intFromPtr(source.queue),
         .queue_family = source.queue_family,
-        .pipeline_cache = @intFromEnum(source.pipeline_cache),
+        .pipeline_cache = @backingInt(source.pipeline_cache),
         .get_instance_proc_addr = loader.instanceProcAddr(),
         .get_device_proc_addr = loader.deviceProcAddr(),
     };
@@ -42,9 +42,9 @@ pub fn device(source: *const rhi.Device) Device {
 pub fn image(source: *rhi.Device, texture: rhi.Texture) Image {
     const resource = source.textureResource(texture);
     return .{
-        .image = @intFromEnum(resource.image),
-        .view = @intFromEnum(resource.view),
-        .format = @intFromEnum(resource.vk_format),
+        .image = @backingInt(resource.image),
+        .view = @backingInt(resource.view),
+        .format = @backingInt(resource.vk_format),
         .width = resource.info.width,
         .height = resource.info.height,
     };
@@ -54,7 +54,7 @@ pub fn image(source: *rhi.Device, texture: rhi.Texture) Image {
 /// owed texture back in `shader_read`. Call `restore` once it has.
 pub fn commandBuffer(cmd: *rhi.CommandEncoder) usize {
     cmd.settle();
-    return @intFromEnum(cmd.command);
+    return @intFromPtr(cmd.command);
 }
 
 /// Rebinds what external code recording into the encoder may have unbound.

@@ -2,21 +2,21 @@
     .name = .qaya,
     .fingerprint = 0x7f9a2a83ffd12b64,
     .version = "0.0.0",
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .vulkan = .{
-            .url = "git+https://github.com/Snektron/vulkan-zig#b496a6a561ffbbeb530b0f9ed4e059f88c0723a5",
-            .hash = "vulkan-0.0.0-r7Ytx7N9AwD7IZt5_XNHtkJ4G9qY0pCH-cpcOsbL8wzD",
+            .url = "git+https://github.com/Snektron/vulkan-zig#91a3537868952be63763db2b0725bcf9cf7f0d93",
+            .hash = "vulkan-0.0.0-r7Ytx1eHAwDInvlQSbl5gMYemczKJa6GimvWcgnOjibX",
             .lazy = true,
         },
         .zmesh = .{
-            .url = "git+https://github.com/zig-gamedev/zmesh#11baee8af662580a1cc34a03552f88810f8f8c62",
-            .hash = "zmesh-0.11.0-dev-oO3A5nqTCgDp-F-INyuScGOVTyVZqWg8XPgudQpKbE4o",
+            .url = "git+https://github.com/zig-gamedev/zmesh#11d6e048f42cd3ee5d08d30d143f8eeab0ae6886",
+            .hash = "zmesh-0.11.0-dev-oO3A5u4-EAB3hsnSTrpDC4M4DknrBb6HUmbUNpERxWBt",
             .lazy = true,
         },
         .zstbi = .{
-            .url = "git+https://github.com/zig-gamedev/zstbi#3813f5f113b26f644cfa01a30155cc76b3526e91",
-            .hash = "zstbi-0.11.0-dev-L0Ea_3GWBwAh7m54XX055vwLKPTPij5hyqyeq92MXPE2",
+            .url = "git+https://github.com/zig-gamedev/zstbi#6b9bea1fd13eb7c8299f23605b4c6b04fccd9aa7",
+            .hash = "zstbi-0.11.0-dev-L0Ea_wGXBwCvXIzUWRNZe-6FpofI_nz4uAOQ4O0Fuxko",
             .lazy = true,
         },
         .vulkan_headers = .{

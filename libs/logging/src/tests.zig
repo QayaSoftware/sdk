@@ -155,7 +155,7 @@ test "levels change at runtime by scope, by default and by name" {
     L.log(.debug, .audio_names, "named before it logged", .{});
     try logging.setLevelByName("audio_names", .err);
     L.log(.warn, .audio_names, "hidden by name", .{});
-    try testing.expectError(error.NameTooLong, logging.setLevelByName("x" ** 65, .err));
+    try testing.expectError(error.NameTooLong, logging.setLevelByName(&@as([65]u8, @splat('x')), .err));
 
     var names: [64][]const u8 = undefined;
     const known = logging.scopeNames(&names);
@@ -182,12 +182,12 @@ test "a message too long for the buffers is formatted again, then cut off" {
     var capture: Capture = .{};
     logging.listen(&capture.listener);
     defer logging.unlisten(&capture.listener);
-    L.log(.info, .text, "{s}", .{"a" ** 60});
-    L.log(.info, .text, "{s}", .{"b" ** 200});
+    L.log(.info, .text, "{s}", .{&@as([60]u8, @splat('a'))});
+    L.log(.info, .text, "{s}", .{&@as([200]u8, @splat('b'))});
     try testing.expectEqual(@as(usize, 2), capture.count);
-    try testing.expectEqualStrings("a" ** 60, capture.message(0));
+    try testing.expectEqualStrings(&@as([60]u8, @splat('a')), capture.message(0));
     try testing.expectEqual(@as(usize, 96), capture.lengths[1]);
-    try testing.expectEqualStrings("b" ** 81 ++ "... [truncated]", capture.message(1));
+    try testing.expectEqualStrings(&@as([81]u8, @splat('b')) ++ "... [truncated]", capture.message(1));
 }
 
 const Nested = logging.Logger(.{ .terminal = null, .memory = 4005, .memory_decorations = .plain, .collapse_repeats = false });

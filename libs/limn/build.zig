@@ -22,9 +22,9 @@ const Tool = union(enum) {
     /// named for the work it does.
     fn command(self: Tool, b: *std.Build, depfile: std.Build.LazyPath, label: []const u8) *std.Build.Step.Run {
         const run = std.Build.Step.Run.create(b, b.fmt("compile {s}", .{label}));
-        run.addFileArg(depfile);
+        run.addFileArg2(depfile, .{});
         switch (self) {
-            .path => |path| run.addFileArg(path),
+            .path => |path| run.addFileArg2(path, .{}),
             .system => |name| run.addArg(name),
         }
         return run;
@@ -62,7 +62,7 @@ fn slangCompiler(b: *std.Build) ?Tool {
 /// fetched.
 fn glslangCompiler(b: *std.Build) ?Tool {
     const source = b.lazyDependency("glslang", .{}) orelse return null;
-    const module = b.createModule(.{ .target = b.graph.host, .optimize = .ReleaseFast, .link_libcpp = true });
+    const module = b.createModule(.{ .target = b.graph.host, .optimize = .fast, .link_libcpp = true });
     const generated = b.addWriteFiles();
     _ = generated.add("glslang/build_info.h",
         \\#pragma once
@@ -154,40 +154,40 @@ pub fn build(lib: *Sdk.Library) void {
     const system_tools = b.option(bool, "system_tools", "Run slangc and glslangValidator from PATH instead of fetched builds (default: false)") orelse false;
     const slangc: Tool = if (system_tools) .{ .system = "slangc" } else slangCompiler(b) orelse return;
     const native_target = target.result.os.tag == b.graph.host.result.os.tag and target.result.cpu.arch == b.graph.host.result.cpu.arch and target.result.abi == b.graph.host.result.abi;
-    const asset_optimize: std.builtin.OptimizeMode = if (optimize == .Debug) .ReleaseFast else optimize;
+    const asset_optimize: std.lang.Optimize = if (optimize == .debug) .fast else optimize;
     const validate_input = b.option(bool, "validate_input", "Check asset files before trusting them, and in Debug keep safety checks in the texture and font parsers (default: true)") orelse true;
-    const parser_optimize: std.builtin.OptimizeMode = if (optimize == .Debug and validate_input) .ReleaseSafe else asset_optimize;
+    const parser_optimize: std.lang.Optimize = if (optimize == .debug and validate_input) .safe else asset_optimize;
     const fidelityfx = b.option(bool, "fidelityfx", "Build AMD's FidelityFX SDK in, for FSR 2 and FSR 3 upscaling (default: true, false with -Dtsan)") orelse !thread_sanitizer;
     const features = b.addOptions();
     features.addOption(bool, "fidelityfx", fidelityfx);
-    const dlss_sdk = b.option([]const u8, "dlss_sdk", "Where NVIDIA's DLSS SDK is (default: dlss_sdk, which `zig build limn-dlss-sdk` fetches)") orelse b.pathFromRoot(dlss_sdk_default);
-    const dlss_found = if (b.build_root.handle.access(b.graph.io, b.pathResolve(&.{ dlss_sdk, "include", "nvsdk_ngx.h" }), .{})) |_| true else |_| false;
+    const dlss_sdk = b.option([]const u8, "dlss_sdk", "Where NVIDIA's DLSS SDK is (default: dlss_sdk, which `zig build limn-dlss-sdk` fetches)") orelse Sdk.absolutePath(b, dlss_sdk_default);
+    const dlss_found = Sdk.fileExists(b, b.pathResolve(&.{ dlss_sdk, "include", "nvsdk_ngx.h" }));
     const dlss = b.option(bool, "dlss", "Build NVIDIA DLSS upscaling and ray reconstruction in (default: true where the SDK is found)") orelse (dlss_found and native_target and dlssSupported(target) and !thread_sanitizer);
     if (dlss and !dlss_found) std.debug.panic("no DLSS SDK at {s}; run `zig build limn-dlss-sdk` or pass -Ddlss_sdk", .{dlss_sdk});
     features.addOption(bool, "dlss", dlss);
-    features.addOption([:0]const u8, "dlss_libraries", if (dlss) b.allocator.dupeZ(u8, b.pathResolve(&.{ dlss_sdk, dlssLibraries(target), "rel" })) catch @panic("OOM") else "");
-    const fetch_dlss = b.addSystemCommand(&.{ "git", "clone", "--depth", "1", "--branch", dlss_sdk_version, "--filter=blob:none", "--sparse", "https://github.com/NVIDIA/DLSS", b.pathFromRoot(dlss_sdk_default) });
-    const trim_dlss = b.addSystemCommand(&.{ "git", "-C", b.pathFromRoot(dlss_sdk_default), "sparse-checkout", "set", "include", dlssLibraries(target) });
+    features.addOption([:0]const u8, "dlss_libraries", if (dlss) b.allocator.dupeSentinel(u8, b.pathResolve(&.{ dlss_sdk, dlssLibraries(target), "rel" }), 0) catch @panic("OOM") else "");
+    const fetch_dlss = b.addSystemCommand(&.{ "git", "clone", "--depth", "1", "--branch", dlss_sdk_version, "--filter=blob:none", "--sparse", "https://github.com/NVIDIA/DLSS", Sdk.absolutePath(b, dlss_sdk_default) });
+    const trim_dlss = b.addSystemCommand(&.{ "git", "-C", Sdk.absolutePath(b, dlss_sdk_default), "sparse-checkout", "set", "include", dlssLibraries(target) });
     trim_dlss.step.dependOn(&fetch_dlss.step);
     lib.step("dlss-sdk", "Fetch NVIDIA's DLSS SDK into dlss_sdk, under NVIDIA's license; builds after it have DLSS").dependOn(&trim_dlss.step);
     features.addOption(bool, "dlss_logging", b.option(bool, "dlss_logging", "Let DLSS write its log (default: false)") orelse false);
-    const nrd_sdk = b.option([]const u8, "nrd_sdk", "Where NVIDIA's NRD SDK is, built (default: nrd_sdk, which `zig build limn-nrd-sdk` fetches and builds)") orelse b.pathFromRoot(nrd_sdk_default);
-    const nrd_found = if (b.build_root.handle.access(b.graph.io, b.pathResolve(&.{ nrd_sdk, "_Bin", "libNRD.a" }), .{})) |_| true else |_| false;
+    const nrd_sdk = b.option([]const u8, "nrd_sdk", "Where NVIDIA's NRD SDK is, built (default: nrd_sdk, which `zig build limn-nrd-sdk` fetches and builds)") orelse Sdk.absolutePath(b, nrd_sdk_default);
+    const nrd_found = Sdk.fileExists(b, b.pathResolve(&.{ nrd_sdk, "_Bin", "libNRD.a" }));
     const nrd = b.option(bool, "nrd", "Build NVIDIA's NRD denoiser in, for path tracing (default: true where the SDK is found)") orelse (nrd_found and native_target and !thread_sanitizer);
     if (nrd and !nrd_found) std.debug.panic("no built NRD SDK at {s}; run `zig build limn-nrd-sdk` or pass -Dnrd_sdk", .{nrd_sdk});
     features.addOption(bool, "nrd", nrd);
-    const fetch_nrd = b.addSystemCommand(&.{ "git", "clone", "--depth", "1", "--branch", nrd_sdk_version, "--recurse-submodules", "--shallow-submodules", "https://github.com/NVIDIA-RTX/NRD", b.pathFromRoot(nrd_sdk_default) });
+    const fetch_nrd = b.addSystemCommand(&.{ "git", "clone", "--depth", "1", "--branch", nrd_sdk_version, "--recurse-submodules", "--shallow-submodules", "https://github.com/NVIDIA-RTX/NRD", Sdk.absolutePath(b, nrd_sdk_default) });
     const configure_nrd = b.addSystemCommand(&.{
-        "cmake",                         "-S",                                         b.pathFromRoot(nrd_sdk_default),
-        "-B",                            b.pathFromRoot(nrd_sdk_default ++ "/_Build"), "-DCMAKE_BUILD_TYPE=Release",
-        "-DNRD_STATIC_LIBRARY=ON",       "-DNRD_EMBEDS_SPIRV_SHADERS=ON",              "-DNRD_EMBEDS_DXIL_SHADERS=OFF",
-        "-DNRD_EMBEDS_DXBC_SHADERS=OFF", "-DNRD_NORMAL_ENCODING=4",                    "-DNRD_ROUGHNESS_ENCODING=1",
+        "cmake",                         "-S",                                              Sdk.absolutePath(b, nrd_sdk_default),
+        "-B",                            Sdk.absolutePath(b, nrd_sdk_default ++ "/_Build"), "-DCMAKE_BUILD_TYPE=Release",
+        "-DNRD_STATIC_LIBRARY=ON",       "-DNRD_EMBEDS_SPIRV_SHADERS=ON",                   "-DNRD_EMBEDS_DXIL_SHADERS=OFF",
+        "-DNRD_EMBEDS_DXBC_SHADERS=OFF", "-DNRD_NORMAL_ENCODING=4",                         "-DNRD_ROUGHNESS_ENCODING=1",
     });
-    if (b.findProgram(&.{"dxc"}, &.{})) |compiler| configure_nrd.addArg(b.fmt("-DNRD_DXC_CUSTOM_PATH={s}", .{compiler})) else |_| {}
-    const patch_nrd = b.addSystemCommand(&.{ "sed", "-i", "s/        --allResourcesBound$/        --allResourcesBound\n        -X -fspv-use-unknown-image-format/", b.pathFromRoot(nrd_sdk_default ++ "/CMakeLists.txt") });
+    configure_nrd.addFileArg2(b.findProgramLazy(.{ .names = &.{"dxc"} }), .{ .prefix = "-DNRD_DXC_CUSTOM_PATH=" });
+    const patch_nrd = b.addSystemCommand(&.{ "sed", "-i", "s/        --allResourcesBound$/        --allResourcesBound\n        -X -fspv-use-unknown-image-format/", Sdk.absolutePath(b, nrd_sdk_default ++ "/CMakeLists.txt") });
     patch_nrd.step.dependOn(&fetch_nrd.step);
     configure_nrd.step.dependOn(&patch_nrd.step);
-    const build_nrd = b.addSystemCommand(&.{ "cmake", "--build", b.pathFromRoot(nrd_sdk_default ++ "/_Build"), "-j", "8" });
+    const build_nrd = b.addSystemCommand(&.{ "cmake", "--build", Sdk.absolutePath(b, nrd_sdk_default ++ "/_Build"), "-j", "8" });
     build_nrd.step.dependOn(&configure_nrd.step);
     lib.step("nrd-sdk", "Fetch NVIDIA's NRD SDK into nrd_sdk, under NVIDIA's license, and build it (needs cmake, a C++ compiler and dxc); builds after it have NRD").dependOn(&build_nrd.step);
     features.addOption(bool, "validate_input", validate_input);
@@ -259,7 +259,7 @@ pub fn build(lib: *Sdk.Library) void {
         .root_module = b.createModule(.{
             .root_source_file = lib.path("src/render/core/spirv_readonly.zig"),
             .target = b.graph.host,
-            .optimize = .ReleaseSafe,
+            .optimize = .safe,
         }),
     });
     const depfile = b.addExecutable(.{
@@ -267,7 +267,7 @@ pub fn build(lib: *Sdk.Library) void {
         .root_module = b.createModule(.{
             .root_source_file = lib.path("src/depfile.zig"),
             .target = b.graph.host,
-            .optimize = .ReleaseSafe,
+            .optimize = .safe,
         }),
     });
     const shader_tools: ShaderTools = .{
@@ -285,7 +285,7 @@ pub fn build(lib: *Sdk.Library) void {
         .path => |path| lib.addNamedLazyPath("slangc", path),
         .system => {},
     }
-    const shader_reload = b.option(bool, "shader_reload", "Keep the shader source paths in the library for `shaders.reload` (default: Debug only)") orelse (optimize == .Debug);
+    const shader_reload = b.option(bool, "shader_reload", "Keep the shader source paths in the library for `shaders.reload` (default: Debug only)") orelse (optimize == .debug);
     const shader_options = b.addOptions();
     var shader_names: [manifest.renderer.len][]const u8 = undefined;
     var shader_sources: [manifest.renderer.len][]const u8 = undefined;
@@ -310,7 +310,7 @@ pub fn build(lib: *Sdk.Library) void {
     shader_options.addOption([]const bool, "read_only", &shader_read_only);
     shader_options.addOption([]const []const u8, "slang_arguments", &slang_arguments);
     shader_options.addOption([]const u8, "include_dir", if (shader_reload) lib.pathFromRoot(shader_dir) else "");
-    if (shader_reload) shader_options.addOptionPath("generated_dir", generated_dir) else shader_options.addOption([]const u8, "generated_dir", "");
+    if (shader_reload) shader_options.addOptionPathUntracked("generated_dir", generated_dir) else shader_options.addOption([]const u8, "generated_dir", "");
     shader_options.addOption(bool, "reload", shader_reload);
     switch (slangc) {
         .path => |path| shader_options.addOptionPath("slangc", path),
@@ -330,7 +330,7 @@ pub fn build(lib: *Sdk.Library) void {
     lib.addTest(depfile.root_module);
     const apk_packer = b.addExecutable(.{
         .name = "apk",
-        .root_module = b.createModule(.{ .root_source_file = lib.path("src/apk.zig"), .target = b.graph.host, .optimize = .ReleaseSafe }),
+        .root_module = b.createModule(.{ .root_source_file = lib.path("src/apk.zig"), .target = b.graph.host, .optimize = .safe }),
     });
     lib.addTest(apk_packer.root_module);
     lib.addNamedLazyPath("apk", apk_packer.getEmittedBin());
@@ -353,7 +353,7 @@ pub fn build(lib: *Sdk.Library) void {
     lib.addCheck(checks);
     const run_checks = b.addRunArtifact(checks);
     run_checks.has_side_effects = true;
-    if (b.args) |args| run_checks.addArgs(args);
+    run_checks.addPassthruArgs();
     if (thread_sanitizer) run_checks.setEnvironmentVariable("TSAN_OPTIONS", b.fmt("suppressions={s}", .{lib.pathFromRoot("src/tsan.supp")}));
     lib.step("checks", "Check picking, shader reloading and running out of memory, without a window").dependOn(&run_checks.step);
     verify_step.dependOn(&run_checks.step);
@@ -370,7 +370,7 @@ pub fn build(lib: *Sdk.Library) void {
     const run_costs = b.addRunArtifact(costs);
     run_costs.has_side_effects = true;
     if (thread_sanitizer) run_costs.setEnvironmentVariable("TSAN_OPTIONS", b.fmt("suppressions={s}", .{lib.pathFromRoot("src/tsan.supp")}));
-    if (b.args) |args| run_costs.addArgs(args);
+    run_costs.addPassthruArgs();
     lib.step("costs", "Print what frames record as 2D and 3D scenes grow, without a window").dependOn(&run_costs.step);
 }
 
@@ -475,7 +475,7 @@ fn addFidelityFx(
     lib: *Sdk.Library,
     renderer: *std.Build.Module,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     vulkan_include: std.Build.LazyPath,
     volk: *std.Build.Dependency,
     depfile: std.Build.LazyPath,
@@ -491,7 +491,7 @@ fn addFidelityFx(
         .root_module = b.createModule(.{
             .root_source_file = lib.path("src/ffx_permutations.zig"),
             .target = b.graph.host,
-            .optimize = .ReleaseSafe,
+            .optimize = .safe,
         }),
     });
     const gpu = lib.path(ffx_root ++ "/include/FidelityFX/gpu");
@@ -500,7 +500,7 @@ fn addFidelityFx(
         for (effect.options, option_names) |option, *name| name.* = b.fmt("{s}_{s}", .{ effect.prefix, option.name });
         for (effect.passes) |pass| {
             const generate = b.addRunArtifact(generator);
-            const headers = generate.addOutputDirectoryArg(pass);
+            const headers = generate.addOutputDirectoryArg2(pass, .{});
             generate.addArg(pass);
             generate.addArg(std.mem.join(b.allocator, ",", option_names) catch @panic("OOM"));
             for (0..@as(usize, 1) << @intCast(effect.options.len)) |combination| {
@@ -515,13 +515,13 @@ fn addFidelityFx(
                 compile.addArgs(&.{ "-V", "-S", "comp", "--target-env", "vulkan1.2", "-g", "-DFFX_GLSL=1", "-DFFX_GPU=1", "-DFFX_HALF=0", "-DFFX_SPD_NO_WAVE_OPERATIONS" });
                 for (effect.fixed) |fixed| compile.addArg(b.fmt("-D{s}_{s}", .{ effect.prefix, fixed }));
                 for (option_names, 0..) |name, bit| compile.addArg(b.fmt("-D{s}={d}", .{ name, (combination >> @intCast(bit)) & 1 }));
-                compile.addPrefixedDirectoryArg("-I", gpu);
-                compile.addPrefixedDirectoryArg("-I", gpu.path(b, effect.name));
+                compile.addDirectoryArg2(gpu, .{ .prefix = "-I" });
+                compile.addDirectoryArg2(gpu.path(b, effect.name), .{ .prefix = "-I" });
                 compile.addArg("--depfile");
-                _ = compile.addDepFileOutputArg(b.fmt("{s}_{d}.d", .{ pass, combination }));
-                compile.addFileArg(lib.path(b.fmt("{s}/src/backends/vk/shaders/{s}/{s}.glsl", .{ ffx_root, effect.name, pass })));
+                _ = compile.addDepFileOutputArg2(b.fmt("{s}_{d}.d", .{ pass, combination }), .{});
+                compile.addFileArg2(lib.path(b.fmt("{s}/src/backends/vk/shaders/{s}/{s}.glsl", .{ ffx_root, effect.name, pass })), .{});
                 compile.addArg("-o");
-                generate.addFileArg(compile.addOutputFileArg(b.fmt("{s}_{d}.spv", .{ pass, combination })));
+                generate.addFileArg2(compile.addOutputFileArg2(b.fmt("{s}_{d}.spv", .{ pass, combination }), .{}), .{});
             }
             library.root_module.addIncludePath(headers);
         }
@@ -591,7 +591,7 @@ fn addDlss(
     lib: *Sdk.Library,
     renderer: *std.Build.Module,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     vulkan_include: std.Build.LazyPath,
     sdk: []const u8,
 ) void {
@@ -620,7 +620,7 @@ fn addNrd(
     lib: *Sdk.Library,
     renderer: *std.Build.Module,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     vulkan_include: std.Build.LazyPath,
     sdk: []const u8,
 ) void {
@@ -644,7 +644,7 @@ fn addNrd(
 fn volkModule(
     lib: *Sdk.Library,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     vulkan_include: std.Build.LazyPath,
     /// The loader's source: `volk.c` and `volk.h` at its root.
     source: *std.Build.Dependency,
@@ -705,26 +705,26 @@ pub fn addShaders(b: *std.Build, qaya: *std.Build.Dependency, module: *std.Build
 fn compileShaders(b: *std.Build, module: *std.Build.Module, base: []const u8, shaders: []const Shader, tools: ShaderTools, shaders_step: ?*std.Build.Step) void {
     for (shaders) |shader| {
         const command = tools.slangc.command(b, tools.depfile, shader.name);
-        command.addFileArg(b.path(b.pathJoin(&.{ base, shader.src })));
+        command.addFileArg2(b.path(b.pathJoin(&.{ base, shader.src })), .{});
         command.addArgs(&slang_arguments);
         command.addArgs(&.{ "-stage", shader.stage, "-entry", shader.entry });
-        command.addPrefixedDirectoryArg("-I", tools.include);
-        command.addPrefixedDirectoryArg("-I", tools.generated);
+        command.addDirectoryArg2(tools.include, .{ .prefix = "-I" });
+        command.addDirectoryArg2(tools.generated, .{ .prefix = "-I" });
         for (shader.defines) |define| command.addArg(b.fmt("-D{s}", .{define}));
         command.addArg("-depfile");
-        _ = command.addDepFileOutputArg(b.fmt("{s}.d", .{shader.name}));
+        _ = command.addDepFileOutputArg2(b.fmt("{s}.d", .{shader.name}), .{});
         command.addArg("-o");
         if (shader.writable_reads) {
-            const output = command.addOutputFileArg(shader.name);
+            const output = command.addOutputFileArg2(shader.name, .{});
             module.addAnonymousImport(shader.name, .{ .root_source_file = output });
             if (shaders_step) |step| step.dependOn(&command.step);
             continue;
         }
-        const compiled = command.addOutputFileArg(b.fmt("{s}.slang.spv", .{shader.name}));
+        const compiled = command.addOutputFileArg2(b.fmt("{s}.slang.spv", .{shader.name}), .{});
         const mark = std.Build.Step.Run.create(b, b.fmt("mark {s} read-only", .{shader.name}));
-        mark.addFileArg(tools.spirv_readonly);
-        mark.addFileArg(compiled);
-        const output = mark.addOutputFileArg(shader.name);
+        mark.addFileArg2(tools.spirv_readonly, .{});
+        mark.addFileArg2(compiled, .{});
+        const output = mark.addOutputFileArg2(shader.name, .{});
         module.addAnonymousImport(shader.name, .{ .root_source_file = output });
         if (shaders_step) |step| step.dependOn(&mark.step);
     }

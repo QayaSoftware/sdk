@@ -32,27 +32,27 @@ pub fn createTexture(self: *Device, desc: types.TextureDesc) !types.Texture {
         return error.InvalidTextureDesc;
     const format = vkFormat(desc.format);
     const image = try self.vkd.createImage(&.{
-        .flags = .{ .cube_compatible_bit = desc.kind == .cube },
+        .flags = .{ .cube_compatible = desc.kind == .cube },
         .image_type = if (volume) .@"3d" else .@"2d",
         .format = format,
         .extent = .{ .width = desc.width, .height = desc.height, .depth = desc.depth },
         .mip_levels = desc.mip_levels,
         .array_layers = layers,
-        .samples = .{ .@"1_bit" = true },
+        .samples = .{ .@"1" = true },
         .tiling = .optimal,
         .usage = .{
-            .sampled_bit = desc.usage.sampled,
-            .storage_bit = desc.usage.storage,
-            .fragment_shading_rate_attachment_bit_khr = desc.usage.shading_rate,
-            .color_attachment_bit = desc.usage.color_attachment,
-            .depth_stencil_attachment_bit = desc.usage.depth_attachment,
-            .transfer_src_bit = desc.usage.copy_src or desc.mip_levels > 1,
-            .transfer_dst_bit = desc.usage.copy_dst or desc.mip_levels > 1,
+            .sampled = desc.usage.sampled,
+            .storage = desc.usage.storage,
+            .fragment_shading_rate_attachment_khr = desc.usage.shading_rate,
+            .color_attachment = desc.usage.color_attachment,
+            .depth_stencil_attachment = desc.usage.depth_attachment,
+            .transfer_src = desc.usage.copy_src or desc.mip_levels > 1,
+            .transfer_dst = desc.usage.copy_dst or desc.mip_levels > 1,
         },
         .sharing_mode = .exclusive,
         .initial_layout = .undefined,
     }, null);
-    setName(self, .image, @intFromEnum(image), desc.name);
+    setName(self, .image, @backingInt(image), desc.name);
     errdefer self.vkd.destroyImage(image, null);
     const allocation = try self.allocator.allocate(memory.imageNeeds(self.vkd, image), .gpu, .image);
     errdefer self.allocator.free(allocation);
@@ -77,7 +77,7 @@ pub fn registerTexture(
     sampled: bool,
 ) !types.Texture {
     const format = vkFormat(info.format);
-    const aspect: vk.ImageAspectFlags = if (info.format.isDepth()) .{ .depth_bit = true } else .{ .color_bit = true };
+    const aspect: vk.ImageAspectFlags = if (info.format.isDepth()) .{ .depth = true } else .{ .color = true };
     const view = try self.vkd.createImageView(&.{
         .image = image,
         .view_type = switch (info.kind) {
@@ -103,7 +103,7 @@ pub fn registerTexture(
         const slot = try self.texture_slots.allocate();
         bindless_index = slot;
         const image_info = vk.DescriptorImageInfo{
-            .sampler = .null_handle,
+            .sampler = .null,
             .image_view = view,
             .image_layout = .read_only_optimal,
         };
@@ -183,7 +183,7 @@ pub fn storageIndex(self: *Device, texture: types.Texture, mip: u32, layer: u32)
     const slot = try slots.allocate();
     errdefer slots.release(slot);
     try resource.storage_slots.append(self.gpa, .{ .mip = mip, .layer = layer, .slot = slot });
-    const image_info = vk.DescriptorImageInfo{ .sampler = .null_handle, .image_view = view, .image_layout = .general };
+    const image_info = vk.DescriptorImageInfo{ .sampler = .null, .image_view = view, .image_layout = .general };
     self.vkd.updateDescriptorSets(&.{.{
         .dst_set = self.descriptor_set,
         .dst_binding = if (whole) 3 else 2,
@@ -386,7 +386,7 @@ pub fn createSampler(self: *Device, desc: types.SamplerDesc) !types.Sampler {
     errdefer self.vkd.destroySampler(handle, null);
     const slot = try self.sampler_slots.allocate();
     errdefer self.sampler_slots.release(slot);
-    const image_info = vk.DescriptorImageInfo{ .sampler = handle, .image_view = .null_handle, .image_layout = .undefined };
+    const image_info = vk.DescriptorImageInfo{ .sampler = handle, .image_view = .null, .image_layout = .undefined };
     self.vkd.updateDescriptorSets(&.{.{
         .dst_set = self.descriptor_set,
         .dst_binding = 1,
@@ -450,7 +450,7 @@ pub fn createSharedTexture(self: *Device, desc: types.TextureDesc) !types.Textur
     if (!self.caps.shared_textures) return error.SharedTexturesUnavailable;
     if (desc.width == 0 or desc.height == 0 or desc.mip_levels != 1 or desc.layers != 1 or desc.kind != .@"2d")
         return error.InvalidTextureDesc;
-    const handle_types = vk.ExternalMemoryHandleTypeFlags{ .opaque_fd_bit = true };
+    const handle_types = vk.ExternalMemoryHandleTypeFlags{ .opaque_fd = true };
     const external = vk.ExternalMemoryImageCreateInfo{ .handle_types = handle_types };
     const image = try self.vkd.createImage(&.{
         .p_next = &external,
@@ -460,18 +460,18 @@ pub fn createSharedTexture(self: *Device, desc: types.TextureDesc) !types.Textur
         .extent = .{ .width = desc.width, .height = desc.height, .depth = 1 },
         .mip_levels = 1,
         .array_layers = 1,
-        .samples = .{ .@"1_bit" = true },
+        .samples = .{ .@"1" = true },
         .tiling = .optimal,
         .usage = .{
-            .sampled_bit = true,
-            .color_attachment_bit = desc.usage.color_attachment,
-            .transfer_src_bit = true,
-            .transfer_dst_bit = true,
+            .sampled = true,
+            .color_attachment = desc.usage.color_attachment,
+            .transfer_src = true,
+            .transfer_dst = true,
         },
         .sharing_mode = .exclusive,
         .initial_layout = .undefined,
     }, null);
-    setName(self, .image, @intFromEnum(image), desc.name);
+    setName(self, .image, @backingInt(image), desc.name);
     errdefer self.vkd.destroyImage(image, null);
     const allocation = try self.allocator.allocateExported(memory.imageNeeds(self.vkd, image), handle_types);
     errdefer self.allocator.free(allocation);
@@ -496,7 +496,7 @@ pub fn exportTexture(self: *Device, texture: types.Texture) !struct { handle: i6
     if (allocation.block_index != null) return error.InvalidTexture;
     const descriptor = try self.vkd.getMemoryFdKHR(&.{
         .memory = allocation.memory,
-        .handle_type = .{ .opaque_fd_bit = true },
+        .handle_type = .{ .opaque_fd = true },
     });
     return .{ .handle = descriptor, .size = allocation.size };
 }

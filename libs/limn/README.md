@@ -64,7 +64,7 @@ while (running) {
 
 ## Build
 
-Requires Zig 0.16 and a Vulkan 1.3 driver. Everything else is fetched by
+Requires Zig 0.17 and a Vulkan 1.3 driver. Everything else is fetched by
 the build: Slang, glslang and the Android NDK, so `-Dtarget` cross-compiles
 from any host (`-Dsystem_tools` uses `slangc` and `glslangValidator` from PATH
 instead).

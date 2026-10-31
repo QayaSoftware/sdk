@@ -55,7 +55,7 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print(
         \\records per benchmark: {d}  (pass a number to change it, e.g. zig build logging-performance -- 5000000)
-        \\use ReleaseFast for meaningful numbers: zig build logging-performance -Doptimize=ReleaseFast
+        \\use -Doptimize=fast for meaningful numbers: zig build logging-performance -Doptimize=fast
         \\
         \\
     , .{n});

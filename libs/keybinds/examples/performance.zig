@@ -17,8 +17,8 @@ fn printRow(name: []const u8, n: usize, ns: i96) void {
 /// Every key, mouse button and pad button bound in each context, with
 /// modifiers, beside the bindings a game has: about a thousand.
 fn register(map: *Map) !void {
-    inline for (@typeInfo(keybinds.Key).@"enum".fields) |field| {
-        const which: keybinds.Input = .key(@field(keybinds.Key, field.name));
+    inline for (@typeInfo(keybinds.Key).@"enum".field_names) |field_name| {
+        const which: keybinds.Input = .key(@field(keybinds.Key, field_name));
         _ = try map.bindTrigger(.other, .single(.of(.{ .ctrl = true }, &.{which})), .{ .when = &.{.editor} });
         _ = try map.bindTrigger(.other, .single(.of(.{ .ctrl = true, .shift = true }, &.{which})), .{ .when = &.{.editor} });
         _ = try map.bindTrigger(.other, .single(.of(.{ .alt = true }, &.{which})), .{ .when = &.{.menu} });
@@ -50,7 +50,7 @@ pub fn main(init: std.process.Init) !void {
     defer map.deinit();
     var start = std.Io.Clock.now(.awake, io);
     try register(&map);
-    std.debug.print("bindings: {d}, registered in {d:.2} ms\nruns per benchmark: {d}  (ReleaseFast for meaningful numbers)\n\n", .{ map.bindings.items.len, @as(f64, @floatFromInt(elapsed(io, start))) / 1e6, n });
+    std.debug.print("bindings: {d}, registered in {d:.2} ms\nruns per benchmark: {d}  (-Doptimize=fast for meaningful numbers)\n\n", .{ map.bindings.items.len, @as(f64, @floatFromInt(elapsed(io, start))) / 1e6, n });
 
     var tracker = Map.Tracker.init(gpa, &map, 0);
     defer tracker.deinit();

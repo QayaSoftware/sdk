@@ -20,7 +20,7 @@ fn blasGeometries(self: *Device, desc: types.BlasDesc, geometries: *[types.max_b
         if (geometry.vertex_count == 0) return error.InvalidBlasDesc;
         geometries[index] = .{
             .geometry_type = .triangles_khr,
-            .flags = .{ .opaque_bit_khr = geometry.solid },
+            .flags = .{ .opaque_khr = geometry.solid },
             .geometry = .{ .triangles = .{
                 .vertex_format = .r32g32b32_sfloat,
                 .vertex_data = .{ .device_address = self.bufferAddress(geometry.vertices) + geometry.vertex_offset },
@@ -72,7 +72,7 @@ pub fn createBlas(self: *Device, desc: types.BlasDesc) !types.AccelerationStruct
     };
     self.vkd.getAccelerationStructureBuildSizesKHR(.device_khr, &.{
         .type = .bottom_level_khr,
-        .flags = .{ .prefer_fast_trace_bit_khr = !desc.dynamic, .prefer_fast_build_bit_khr = desc.dynamic, .allow_update_bit_khr = desc.dynamic, .allow_compaction_bit_khr = !desc.dynamic },
+        .flags = .{ .prefer_fast_trace_khr = !desc.dynamic, .prefer_fast_build_khr = desc.dynamic, .allow_update_khr = desc.dynamic, .allow_compaction_khr = !desc.dynamic },
         .mode = .build_khr,
         .geometry_count = count,
         .p_geometries = &geometries,
@@ -115,7 +115,7 @@ pub fn createTlas(self: *Device, desc: types.TlasDesc) !types.AccelerationStruct
 }
 
 fn tlasFlags(updatable: bool) vk.BuildAccelerationStructureFlagsKHR {
-    return .{ .prefer_fast_build_bit_khr = true, .allow_update_bit_khr = updatable };
+    return .{ .prefer_fast_build_khr = true, .allow_update_khr = updatable };
 }
 
 /// Deferred like `destroyBuffer`; also releases its buffers.
@@ -172,9 +172,9 @@ pub fn buildBlasesCommand(self: *Device, command: vk.CommandBuffer, builds: []co
             const refit = resource.dynamic and resource.built;
             infos[index] = .{
                 .type = .bottom_level_khr,
-                .flags = .{ .prefer_fast_trace_bit_khr = !resource.dynamic, .prefer_fast_build_bit_khr = resource.dynamic, .allow_update_bit_khr = resource.dynamic, .allow_compaction_bit_khr = resource.compactable },
+                .flags = .{ .prefer_fast_trace_khr = !resource.dynamic, .prefer_fast_build_khr = resource.dynamic, .allow_update_khr = resource.dynamic, .allow_compaction_khr = resource.compactable },
                 .mode = if (refit) .update_khr else .build_khr,
-                .src_acceleration_structure = if (refit) resource.handle else .null_handle,
+                .src_acceleration_structure = if (refit) resource.handle else .null,
                 .dst_acceleration_structure = resource.handle,
                 .geometry_count = count,
                 .p_geometries = &geometries[index],
@@ -192,7 +192,7 @@ pub fn buildBlasesCommand(self: *Device, command: vk.CommandBuffer, builds: []co
 pub fn measureBlasCommand(self: *Device, command: vk.CommandBuffer, blas: types.AccelerationStructure) !void {
     const resource = self.accelerationResource(blas);
     if (!resource.compactable or resource.compaction_slot != null) return;
-    if (self.compaction_pool == .null_handle) {
+    if (self.compaction_pool == .null) {
         self.compaction_pool = try self.vkd.createQueryPool(&.{
             .query_type = .acceleration_structure_compacted_size_khr,
             .query_count = compaction_capacity,
@@ -213,7 +213,7 @@ pub fn compactedBlasSize(self: *Device, blas: types.AccelerationStructure) ?u64 
     const resource = self.accelerationResource(blas);
     const slot = resource.compaction_slot orelse return null;
     var size: u64 = 0;
-    const outcome = self.vkd.getQueryPoolResults(self.compaction_pool, slot, 1, @sizeOf(u64), &size, @sizeOf(u64), .{ .@"64_bit" = true }) catch return null;
+    const outcome = self.vkd.getQueryPoolResults(self.compaction_pool, slot, 1, @sizeOf(u64), &size, @sizeOf(u64), .{ .@"64" = true }) catch return null;
     if (outcome != .success) return null;
     self.compaction_slots.unset(slot);
     resource.compaction_slot = null;
@@ -262,7 +262,7 @@ pub fn buildTlasCommand(self: *Device, command: vk.CommandBuffer, tlas: types.Ac
         .type = .top_level_khr,
         .flags = tlasFlags(resource.updatable),
         .mode = if (refit) .update_khr else .build_khr,
-        .src_acceleration_structure = if (refit) resource.handle else .null_handle,
+        .src_acceleration_structure = if (refit) resource.handle else .null,
         .dst_acceleration_structure = resource.handle,
         .geometry_count = 1,
         .p_geometries = @ptrCast(&geometry),
@@ -275,7 +275,7 @@ pub fn buildTlasCommand(self: *Device, command: vk.CommandBuffer, tlas: types.Ac
 fn tlasGeometry(instances_address: u64) vk.AccelerationStructureGeometryKHR {
     return .{
         .geometry_type = .instances_khr,
-        .flags = .{ .opaque_bit_khr = true },
+        .flags = .{ .opaque_khr = true },
         .geometry = .{ .instances = .{
             .array_of_pointers = .false,
             .data = .{ .device_address = instances_address },

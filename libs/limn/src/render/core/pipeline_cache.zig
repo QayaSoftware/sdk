@@ -197,17 +197,17 @@ pub fn hash(desc: Desc) u64 {
             key.text(g.mesh orelse "");
             key.text(g.task orelse "");
             key.word(g.color_targets.len);
-            for (g.color_targets) |target| key.word(@intFromEnum(target.format) | @as(u64, @intFromEnum(target.blend)) << 32);
+            for (g.color_targets) |target| key.word(@backingInt(target.format) | @as(u64, @backingInt(target.blend)) << 32);
             if (g.depth) |depth| {
-                key.word(@intFromEnum(depth.format) | @as(u64, @intFromBool(depth.@"test")) << 32 | @as(u64, @intFromBool(depth.write)) << 33 | @as(u64, @intFromBool(depth.clamp)) << 34 | @as(u64, @intFromEnum(depth.compare)) << 40);
+                key.word(@backingInt(depth.format) | @as(u64, @intFromBool(depth.@"test")) << 32 | @as(u64, @intFromBool(depth.write)) << 33 | @as(u64, @intFromBool(depth.clamp)) << 34 | @as(u64, @backingInt(depth.compare)) << 40);
                 if (depth.bias) |bias| {
                     key.word(@as(u64, @as(u32, @bitCast(bias.constant))) | @as(u64, @as(u32, @bitCast(bias.slope))) << 32);
                 } else key.word(0xffff_ffff_ffff_ffff);
             } else key.word(0xffff_ffff_ffff_ffff);
-            key.word(@intFromEnum(g.cull) | @as(u64, @intFromEnum(g.topology)) << 8);
+            key.word(@backingInt(g.cull) | @as(u64, @backingInt(g.topology)) << 8);
             if (g.vertex_layout) |layout| {
                 key.word(layout.stride);
-                for (layout.attributes) |attribute| key.word(attribute.location | @as(u64, attribute.offset) << 16 | @as(u64, @intFromEnum(attribute.format)) << 48);
+                for (layout.attributes) |attribute| key.word(attribute.location | @as(u64, attribute.offset) << 16 | @as(u64, @backingInt(attribute.format)) << 48);
             } else key.word(0xffff_ffff);
             key.word(g.fragment_constants.len);
             for (g.fragment_constants) |constant| key.word(constant);
@@ -248,7 +248,7 @@ const Key = struct {
 test "descriptions that differ only in a slice's place hash the same" {
     const targets_a = [_]rhi.ColorTarget{.{ .format = .rgba8_unorm }};
     var targets_b = targets_a;
-    const code = [_]u8{0} ** 128;
+    const code: [128]u8 = @splat(0);
     const a = Desc{ .graphics = .{ .name = "a", .vertex = &code, .color_targets = &targets_a } };
     const b = Desc{ .graphics = .{ .name = "a", .vertex = &code, .color_targets = &targets_b } };
     try std.testing.expectEqual(hash(a), hash(b));

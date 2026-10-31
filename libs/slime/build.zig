@@ -10,6 +10,6 @@ pub fn build(lib: *Sdk.Library) void {
     _ = lib.addExample("basic", "Run examples/basic.zig");
     _ = lib.addExample("prefabs", "Run examples/prefabs.zig");
     _ = lib.addExample("parallel", "Run examples/parallel.zig");
-    const performance = lib.addExample("performance", "Run ECS micro-benchmarks (timer). Optional: zig build slime-performance -Doptimize=ReleaseFast -- 100000");
+    const performance = lib.addExample("performance", "Run ECS micro-benchmarks (timer). Optional: zig build slime-performance -Doptimize=fast -- 100000");
     performance.root_module.link_libc = true;
 }

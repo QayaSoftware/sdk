@@ -173,7 +173,7 @@ Feed the side modifier keys (`left_shift`, `right_ctrl`). The tracker works out 
 
 ## Performance
 
-`zig build keybinds-performance -Doptimize=ReleaseFast`, on an Intel i7 12700F, with 532 bindings:
+`zig build keybinds-performance -Doptimize=fast`, on an Intel i7 12700F, with 532 bindings:
 
 ```
 press + release, one binding fires             1000000     107.9 ns/op
@@ -191,5 +191,5 @@ load the whole keymap from text                    100  204856.2 ns/op
 ```sh
 zig build keybinds-game          # two players on one keymap: contexts, gestures, axes, handlers
 zig build keybinds-editor        # exact shortcuts, sequences, user overrides, conflicts, rebinding, saving
-zig build keybinds-performance -Doptimize=ReleaseFast
+zig build keybinds-performance -Doptimize=fast
 ```

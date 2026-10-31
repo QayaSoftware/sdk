@@ -104,7 +104,7 @@ A record that the runtime level leaves out costs about a nanosecond: a few relax
 
 The logger takes its lock and then stderr's, so don't log while holding `std.debug.lockStderr`: a thread doing that can deadlock with another one that is logging.
 
-`zig build logging-performance -Doptimize=ReleaseFast`, on an Intel i7 12700F:
+`zig build logging-performance -Doptimize=fast`, on an Intel i7 12700F:
 
 ```
 left out by the runtime level                  1000000       0.9 ns/record   1109053201 records/s
@@ -132,5 +132,5 @@ The benchmarks log `frame {d} drew {d} meshes in {d:.2} ms`. The multi-task rows
 ```sh
 zig build logging-basic          # scopes, styles, runtime levels, repeats, JSON
 zig build logging-engine         # frames, thread names, a console listener, once/throttled, a timer, a log directory, recent lines
-zig build logging-performance -Doptimize=ReleaseFast
+zig build logging-performance -Doptimize=fast
 ```

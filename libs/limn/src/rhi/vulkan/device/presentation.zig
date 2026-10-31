@@ -15,7 +15,7 @@ const adapter = @import("adapter.zig");
 /// Format of the swapchain images.
 pub fn backbufferFormat(self: *Device) !types.Format {
     if (self.swapchain == null) return error.NoSurface;
-    if (self.swapchain.?.handle == .null_handle) try recreateSwapchain(self);
+    if (self.swapchain.?.handle == .null) try recreateSwapchain(self);
     return switch (self.swapchain.?.format.format) {
         .b8g8r8a8_srgb => .bgra8_srgb,
         .b8g8r8a8_unorm => .bgra8_unorm,
@@ -66,7 +66,7 @@ pub fn setFrameGenerator(self: *Device, generator: ?FrameGenerator) void {
 pub fn prepareSurface(self: *Device) !bool {
     const swapchain = if (self.swapchain) |*value| value else return true;
     if (swapchain.requested_width == 0 or swapchain.requested_height == 0) return false;
-    if (swapchain.dirty or swapchain.stale.load(.monotonic) or swapchain.handle == .null_handle) {
+    if (swapchain.dirty or swapchain.stale.load(.monotonic) or swapchain.handle == .null) {
         finishPacedPresent(self);
         recreateSwapchain(self) catch |err| switch (err) {
             error.NoDrawableArea => return false,
@@ -98,7 +98,7 @@ fn acquire(self: *Device, semaphore: vk.Semaphore) !u32 {
     while (true) {
         const timeout: u64 = if (self.pacing.load(.acquire)) 0 else std.math.maxInt(u64);
         self.swapchain_mutex.lockUncancelable(self.io);
-        const acquired = self.vkd.acquireNextImageKHR(swapchain.handle, timeout, semaphore, .null_handle);
+        const acquired = self.vkd.acquireNextImageKHR(swapchain.handle, timeout, semaphore, .null);
         self.swapchain_mutex.unlock(self.io);
         const result = try acquired;
         switch (result.result) {
@@ -240,7 +240,7 @@ fn recreateSwapchain(self: *Device) !void {
         }
     }
     const usage = capabilities.supported_usage_flags;
-    const generating = self.frame_generator != null and self.caps.storage_images and usage.transfer_src_bit and usage.transfer_dst_bit;
+    const generating = self.frame_generator != null and self.caps.storage_images and usage.transfer_src and usage.transfer_dst;
     var present_mode: vk.PresentModeKHR = .fifo_khr;
     if (!swapchain.vsync) {
         for (modes) |mode| if (mode == .mailbox_khr) {
@@ -268,8 +268,8 @@ fn recreateSwapchain(self: *Device) !void {
     };
     var image_count = @max(capabilities.min_image_count + 1, 3) + @as(u32, @intFromBool(generating));
     if (capabilities.max_image_count != 0) image_count = @min(image_count, capabilities.max_image_count);
-    var composite_alpha: vk.CompositeAlphaFlagsKHR = .{ .opaque_bit_khr = true };
-    if (!capabilities.supported_composite_alpha.opaque_bit_khr) composite_alpha = .{ .inherit_bit_khr = true };
+    var composite_alpha: vk.CompositeAlphaFlagsKHR = .{ .opaque_khr = true };
+    if (!capabilities.supported_composite_alpha.opaque_khr) composite_alpha = .{ .inherit_khr = true };
 
     const old = swapchain.handle;
     const handle = try self.vkd.createSwapchainKHR(&.{
@@ -279,7 +279,7 @@ fn recreateSwapchain(self: *Device) !void {
         .image_color_space = format.color_space,
         .image_extent = extent,
         .image_array_layers = 1,
-        .image_usage = .{ .color_attachment_bit = true, .transfer_src_bit = generating, .transfer_dst_bit = generating },
+        .image_usage = .{ .color_attachment = true, .transfer_src = generating, .transfer_dst = generating },
         .image_sharing_mode = .exclusive,
         .pre_transform = capabilities.current_transform,
         .composite_alpha = composite_alpha,
@@ -288,7 +288,7 @@ fn recreateSwapchain(self: *Device) !void {
         .old_swapchain = old,
     }, null);
     releaseSwapchainImages(self);
-    if (old != .null_handle) self.vkd.destroySwapchainKHR(old, null);
+    if (old != .null) self.vkd.destroySwapchainKHR(old, null);
     swapchain.handle = handle;
     swapchain.fifo = present_mode == .fifo_khr;
     swapchain.format = format;
@@ -357,7 +357,7 @@ pub fn destroySwapchain(self: *Device) void {
     const swapchain = &self.swapchain.?;
     swapchain.textures.deinit(self.gpa);
     swapchain.render_finished.deinit(self.gpa);
-    if (swapchain.handle != .null_handle) self.vkd.destroySwapchainKHR(swapchain.handle, null);
+    if (swapchain.handle != .null) self.vkd.destroySwapchainKHR(swapchain.handle, null);
     self.swapchain = null;
 }
 
@@ -370,15 +370,15 @@ pub fn setSurface(self: *Device, surface: ?types.Surface) !void {
     std.debug.assert(!self.in_frame);
     try waitQueue(self);
     destroySwapchain(self);
-    if (self.surface != .null_handle) {
+    if (self.surface != .null) {
         self.instance.destroySurfaceKHR(self.surface, null);
-        self.surface = .null_handle;
+        self.surface = .null;
     }
     const next = surface orelse return;
     self.surface = try adapter.createSurface(self.instance, next.window);
     errdefer {
         self.instance.destroySurfaceKHR(self.surface, null);
-        self.surface = .null_handle;
+        self.surface = .null;
     }
     if ((try self.instance.getPhysicalDeviceSurfaceSupportKHR(self.physical, self.queue_family, self.surface)) != .true) return error.SurfaceUnsupported;
     self.swapchain = .{ .requested_width = next.width, .requested_height = next.height, .vsync = next.vsync };

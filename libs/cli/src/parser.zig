@@ -142,7 +142,7 @@ const State = struct {
     fn fail(self: *State, err: Error, details: Details) Error {
         const diagnostics = self.diagnostics;
         diagnostics.err = err;
-        inline for (@typeInfo(Details).@"struct".fields) |field| @field(diagnostics, field.name) = @field(details, field.name);
+        inline for (@typeInfo(Details).@"struct".field_names) |field_name| @field(diagnostics, field_name) = @field(details, field_name);
         return err;
     }
 
@@ -269,16 +269,17 @@ fn parseStruct(comptime T: type, args: []const []const u8, state: *State) Error!
 
 fn parseCommand(comptime T: type, comptime command: spec.Command, result: *T, name: []const u8, rest: []const []const u8, state: *State) Error!void {
     const U = command.Union;
-    inline for (@typeInfo(U).@"union".fields) |field| {
-        const word = comptime value.kebab(field.name);
+    const info = @typeInfo(U).@"union";
+    inline for (info.field_names, info.field_types) |field_name, Field| {
+        const word = comptime value.kebab(field_name);
         if (std.mem.eql(u8, name, word)) {
             const diagnostics = state.diagnostics;
             if (diagnostics.depth < diagnostics.commands.len) {
                 diagnostics.commands[diagnostics.depth] = word;
                 diagnostics.depth += 1;
             }
-            const payload = try parseStruct(spec.Payload(U, field.name), rest, state);
-            @field(result, command.field) = @unionInit(U, field.name, if (field.type == void) {} else payload);
+            const payload = try parseStruct(spec.Payload(U, field_name), rest, state);
+            @field(result, command.field) = @unionInit(U, field_name, if (Field == void) {} else payload);
             return;
         }
     }
@@ -288,17 +289,18 @@ fn parseCommand(comptime T: type, comptime command: spec.Command, result: *T, na
 /// Sets every field that has a value without being given one: its
 /// default, null, false or zero.
 fn initDefaults(comptime T: type, result: *T) void {
-    inline for (@typeInfo(T).@"struct".fields) |field| {
-        const target = &@field(result, field.name);
-        if (field.defaultValue()) |default| {
+    const info = @typeInfo(T).@"struct";
+    inline for (info.field_names, info.field_types, info.field_attrs) |field_name, Field, attrs| {
+        const target = &@field(result, field_name);
+        if (comptime attrs.defaultValue(Field)) |default| {
             target.* = default;
-        } else if (@typeInfo(field.type) == .optional) {
+        } else if (@typeInfo(Field) == .optional) {
             target.* = null;
-        } else if (field.type == bool) {
+        } else if (Field == bool) {
             target.* = false;
-        } else if (comptime spec.isGroup(field.type)) {
-            initDefaults(field.type, target);
-        } else if (comptime spec.option(spec.metaOf(T, field.name), "count", false)) {
+        } else if (comptime spec.isGroup(Field)) {
+            initDefaults(Field, target);
+        } else if (comptime spec.option(spec.metaOf(T, field_name), "count", false)) {
             target.* = 0;
         }
     }
@@ -410,8 +412,8 @@ fn isNumeric(c: u8) bool {
 fn commandNames(comptime U: type) []const []const u8 {
     comptime {
         var names: []const []const u8 = &.{};
-        for (@typeInfo(U).@"union".fields) |field| {
-            if (!spec.option(spec.metaOf(U, field.name), "hidden", false)) names = names ++ [_][]const u8{value.kebab(field.name)};
+        for (@typeInfo(U).@"union".field_names) |field_name| {
+            if (!spec.option(spec.metaOf(U, field_name), "hidden", false)) names = names ++ [_][]const u8{value.kebab(field_name)};
         }
         return names;
     }

@@ -217,9 +217,9 @@ pub const FrameData = struct {
     /// A pool and command buffer for each encoder recorded beside the others,
     /// made on first use; the command buffer the frame goes on in after
     /// them; and what the frame submits, in order.
-    worker_pools: [max_parallel]vk.CommandPool = @splat(.null_handle),
-    worker_commands: [max_parallel]vk.CommandBuffer = @splat(.null_handle),
-    tail: vk.CommandBuffer = .null_handle,
+    worker_pools: [max_parallel]vk.CommandPool = @splat(.null),
+    worker_commands: [max_parallel]vk.CommandBuffer = undefined,
+    tail: ?vk.CommandBuffer = null,
     submits: [max_parallel + 2]vk.CommandBuffer = undefined,
     submit_count: u32 = 0,
 };
@@ -228,7 +228,7 @@ pub const FrameData = struct {
 pub const max_parallel = 8;
 
 const Swapchain = struct {
-    handle: vk.SwapchainKHR = .null_handle,
+    handle: vk.SwapchainKHR = .null,
     format: vk.SurfaceFormatKHR = undefined,
     extent: vk.Extent2D = .{ .width = 0, .height = 0 },
     textures: std.ArrayList(types.Texture) = .empty,
@@ -304,7 +304,7 @@ pub const Device = struct {
     queue_family: u32,
     properties: vk.PhysicalDeviceProperties,
     allocator: memory.Allocator,
-    debug_messenger: vk.DebugUtilsMessengerEXT = .null_handle,
+    debug_messenger: vk.DebugUtilsMessengerEXT = .null,
     /// Validation or `DeviceDesc.debug_names` is on.
     debug_labels: bool,
     /// What this device can do; fixed once `init` returns.
@@ -315,11 +315,11 @@ pub const Device = struct {
     hdr_wanted: bool = false,
     accelerations: HandleTable(AccelerationResource, types.AccelerationTag),
     /// Sizes that bottom-level structures compact to, made on first use.
-    compaction_pool: vk.QueryPool = .null_handle,
-    compaction_slots: std.StaticBitSet(acceleration_module.compaction_capacity) = .initEmpty(),
+    compaction_pool: vk.QueryPool = .null,
+    compaction_slots: std.bit_set.Static(acceleration_module.compaction_capacity) = .empty,
     /// Read with `validationErrorCount`.
     validation_errors: std.atomic.Value(u32) = .init(0),
-    surface: vk.SurfaceKHR = .null_handle,
+    surface: vk.SurfaceKHR = .null,
     swapchain: ?Swapchain = null,
     frame_generator: ?FrameGenerator = null,
     /// Held to acquire from or present to the swapchain.
@@ -366,8 +366,8 @@ pub const Device = struct {
     encoder: CommandEncoder = undefined,
     /// Timelines the frames and the detached jobs signal: frame `n` signals
     /// `n + 1` when it is done, and the detached jobs count up.
-    frame_timeline: vk.Semaphore = .null_handle,
-    detached_timeline: vk.Semaphore = .null_handle,
+    frame_timeline: vk.Semaphore = .null,
+    detached_timeline: vk.Semaphore = .null,
     detached_signaled: u64 = 0,
     /// Encoders recording beside each other between `beginParallel` and
     /// `joinParallel`, and their texture states.
@@ -397,7 +397,7 @@ pub const Device = struct {
     queue_mutex: std.Io.Mutex = .init,
     /// Second queue, where the GPU has one, for `beginDetached` work.
     detached_queue: ?vk.Queue = null,
-    detached_pool: vk.CommandPool = .null_handle,
+    detached_pool: vk.CommandPool = .null,
     /// Detached jobs submitted and not yet released.
     detached_outstanding: u32 = 0,
     /// `beginFrame` and `endFrame` in their parts, as `Renderer` paces
@@ -458,8 +458,9 @@ pub const Device = struct {
         errdefer loader.release(io);
         const self = try gpa.create(Device);
         errdefer gpa.destroy(self);
-        inline for (@typeInfo(Device).@"struct".fields) |field| {
-            if (field.defaultValue()) |value| @field(self, field.name) = value;
+        const info = @typeInfo(Device).@"struct";
+        inline for (info.field_names, info.field_types, info.field_attrs) |field_name, field_type, field_attrs| {
+            if (field_attrs.defaultValue(field_type)) |value| @field(self, field_name) = value;
         }
 
         const base = loader.base();
@@ -472,31 +473,31 @@ pub const Device = struct {
         var instance_extensions: [6][*:0]const u8 = undefined;
         var instance_extension_count: u32 = 0;
         var hdr_wanted = false;
-        const debug_utils = desc.validation or (desc.debug_names and try instanceExtensionAvailable(gpa, base, vk.extensions.ext_debug_utils.name));
+        const debug_utils = desc.validation or (desc.debug_names and try instanceExtensionAvailable(gpa, base, vk.instance_extensions.ext_debug_utils.name));
         if (debug_utils) {
-            instance_extensions[instance_extension_count] = vk.extensions.ext_debug_utils.name;
+            instance_extensions[instance_extension_count] = vk.instance_extensions.ext_debug_utils.name;
             instance_extension_count += 1;
         }
-        if (desc.surface != null and desc.hdr_output and try instanceExtensionAvailable(gpa, base, vk.extensions.ext_swapchain_colorspace.name)) {
-            instance_extensions[instance_extension_count] = vk.extensions.ext_swapchain_colorspace.name;
+        if (desc.surface != null and desc.hdr_output and try instanceExtensionAvailable(gpa, base, vk.instance_extensions.ext_swapchain_colorspace.name)) {
+            instance_extensions[instance_extension_count] = vk.instance_extensions.ext_swapchain_colorspace.name;
             instance_extension_count += 1;
             hdr_wanted = true;
         }
         if (desc.surface) |surface| {
-            instance_extensions[instance_extension_count] = vk.extensions.khr_surface.name;
+            instance_extensions[instance_extension_count] = vk.instance_extensions.khr_surface.name;
             instance_extension_count += 1;
             instance_extensions[instance_extension_count] = switch (surface.window) {
-                .xlib => vk.extensions.khr_xlib_surface.name,
-                .wayland => vk.extensions.khr_wayland_surface.name,
-                .win32 => vk.extensions.khr_win_32_surface.name,
-                .metal => vk.extensions.ext_metal_surface.name,
-                .android => vk.extensions.khr_android_surface.name,
+                .xlib => vk.instance_extensions.khr_xlib_surface.name,
+                .wayland => vk.instance_extensions.khr_wayland_surface.name,
+                .win32 => vk.instance_extensions.khr_win_32_surface.name,
+                .metal => vk.instance_extensions.ext_metal_surface.name,
+                .android => vk.instance_extensions.khr_android_surface.name,
             };
             instance_extension_count += 1;
         }
-        const portability = try instanceExtensionAvailable(gpa, base, vk.extensions.khr_portability_enumeration.name);
+        const portability = try instanceExtensionAvailable(gpa, base, vk.instance_extensions.khr_portability_enumeration.name);
         if (portability) {
-            instance_extensions[instance_extension_count] = vk.extensions.khr_portability_enumeration.name;
+            instance_extensions[instance_extension_count] = vk.instance_extensions.khr_portability_enumeration.name;
             instance_extension_count += 1;
         }
         const validation_layers = [_][*:0]const u8{"VK_LAYER_KHRONOS_validation"};
@@ -507,7 +508,7 @@ pub const Device = struct {
         };
         const instance_handle = try base.createInstance(&.{
             .p_next = if (desc.validation) &validation_features else null,
-            .flags = .{ .enumerate_portability_bit_khr = portability },
+            .flags = .{ .enumerate_portability_khr = portability },
             .p_application_info = &.{
                 .p_application_name = desc.application_name,
                 .application_version = 1,
@@ -526,11 +527,11 @@ pub const Device = struct {
         self.instance_wrapper = loader.instance(io, instance_handle);
         self.instance = dispatch.Instance.init(instance_handle, &self.instance_wrapper);
         errdefer self.instance.destroyInstance(null);
-        self.debug_messenger = .null_handle;
+        self.debug_messenger = .null;
         self.debug_labels = debug_utils;
         self.hdr_wanted = hdr_wanted;
         self.validation_errors = .init(0);
-        self.surface = .null_handle;
+        self.surface = .null;
         self.swapchain = null;
         self.frame_number = 0;
         self.in_frame = false;
@@ -542,18 +543,18 @@ pub const Device = struct {
 
         if (desc.validation) {
             self.debug_messenger = try self.instance.createDebugUtilsMessengerEXT(&.{
-                .message_severity = .{ .warning_bit_ext = true, .error_bit_ext = true },
-                .message_type = .{ .general_bit_ext = true, .validation_bit_ext = true },
+                .message_severity = .{ .warning_ext = true, .error_ext = true },
+                .message_type = .{ .general_ext = true, .validation_ext = true },
                 .pfn_user_callback = debugCallback,
                 .p_user_data = self,
             }, null);
         }
-        errdefer if (self.debug_messenger != .null_handle)
+        errdefer if (self.debug_messenger != .null)
             self.instance.destroyDebugUtilsMessengerEXT(self.debug_messenger, null);
 
         if (desc.surface) |surface| self.surface = try createSurface(self.instance, surface.window);
         self.presents = desc.surface != null;
-        errdefer if (self.surface != .null_handle) self.instance.destroySurfaceKHR(self.surface, null);
+        errdefer if (self.surface != .null) self.instance.destroySurfaceKHR(self.surface, null);
 
         const selected = try selectPhysicalDevice(gpa, self.instance, self.surface, desc.preferred_device);
         self.physical = selected.physical;
@@ -570,12 +571,12 @@ pub const Device = struct {
         for (std.enums.values(types.Format)) |format| {
             const flags = self.instance.getPhysicalDeviceFormatProperties(self.physical, vkFormat(format)).optimal_tiling_features;
             self.caps.formats.set(format, .{
-                .sampled = flags.sampled_image_bit,
-                .filtered = flags.sampled_image_filter_linear_bit,
-                .color_attachment = flags.color_attachment_bit,
-                .blended = flags.color_attachment_blend_bit,
-                .depth_attachment = flags.depth_stencil_attachment_bit,
-                .storage = flags.storage_image_bit,
+                .sampled = flags.sampled_image,
+                .filtered = flags.sampled_image_filter_linear,
+                .color_attachment = flags.color_attachment,
+                .blended = flags.color_attachment_blend,
+                .depth_attachment = flags.depth_stencil_attachment,
+                .storage = flags.storage_image,
             });
         }
 
@@ -608,7 +609,7 @@ pub const Device = struct {
         self.caps.shading_rate_tile = try shadingRateTile(gpa, self.instance, self.physical);
         self.caps.mesh_shaders = desc.mesh_shaders and try supportsMeshShaders(gpa, self.instance, self.physical);
         self.device_fault = blk: {
-            if (!try deviceExtensionListed(gpa, self.instance, self.physical, vk.extensions.ext_device_fault.name)) break :blk false;
+            if (!try deviceExtensionListed(gpa, self.instance, self.physical, vk.device_extensions.ext_device_fault.name)) break :blk false;
             var fault = vk.PhysicalDeviceFaultFeaturesEXT{};
             var supported = vk.PhysicalDeviceFeatures2{ .p_next = &fault, .features = .{} };
             self.instance.getPhysicalDeviceFeatures2(self.physical, &supported);
@@ -673,21 +674,21 @@ pub const Device = struct {
             },
         };
         const queue_priorities = [2]f32{ 1, 0.5 };
-        self.caps.shared_textures = builtin.os.tag == .linux and try deviceExtensionListed(gpa, self.instance, self.physical, vk.extensions.khr_external_memory_fd.name);
+        self.caps.shared_textures = builtin.target.os.tag == .linux and try deviceExtensionListed(gpa, self.instance, self.physical, vk.device_extensions.khr_external_memory_fd.name);
         var extensions = ExtensionList{};
-        if (self.caps.shading_rate_tile != 0) extensions.add(&.{vk.extensions.khr_fragment_shading_rate.name});
-        if (self.caps.mesh_shaders) extensions.add(&.{vk.extensions.ext_mesh_shader.name});
-        if (self.device_fault) extensions.add(&.{vk.extensions.ext_device_fault.name});
-        if (self.surface != .null_handle) extensions.add(&.{vk.extensions.khr_swapchain.name});
-        if (try deviceExtensionListed(gpa, self.instance, self.physical, vk.extensions.khr_portability_subset.name)) extensions.add(&.{vk.extensions.khr_portability_subset.name});
+        if (self.caps.shading_rate_tile != 0) extensions.add(&.{vk.device_extensions.khr_fragment_shading_rate.name});
+        if (self.caps.mesh_shaders) extensions.add(&.{vk.device_extensions.ext_mesh_shader.name});
+        if (self.device_fault) extensions.add(&.{vk.device_extensions.ext_device_fault.name});
+        if (self.surface != .null) extensions.add(&.{vk.device_extensions.khr_swapchain.name});
+        if (try deviceExtensionListed(gpa, self.instance, self.physical, vk.device_extensions.khr_portability_subset.name)) extensions.add(&.{vk.device_extensions.khr_portability_subset.name});
         if (self.caps.ray_tracing) extensions.add(&ray_query_extensions);
         if (self.caps.nvidia_ngx) extensions.add(&ngx_extensions);
-        if (self.caps.shared_textures) extensions.add(&.{vk.extensions.khr_external_memory_fd.name});
-        for ([_][*:0]const u8{ vk.extensions.khr_get_memory_requirements_2.name, vk.extensions.khr_dedicated_allocation.name }) |extension| {
+        if (self.caps.shared_textures) extensions.add(&.{vk.device_extensions.khr_external_memory_fd.name});
+        for ([_][*:0]const u8{ vk.device_extensions.khr_get_memory_requirements_2.name, vk.device_extensions.khr_dedicated_allocation.name }) |extension| {
             if (try deviceExtensionListed(gpa, self.instance, self.physical, extension)) extensions.add(&.{extension});
         }
-        self.memory_budget = try deviceExtensionListed(gpa, self.instance, self.physical, vk.extensions.ext_memory_budget.name);
-        if (self.memory_budget) extensions.add(&.{vk.extensions.ext_memory_budget.name});
+        self.memory_budget = try deviceExtensionListed(gpa, self.instance, self.physical, vk.device_extensions.ext_memory_budget.name);
+        if (self.memory_budget) extensions.add(&.{vk.device_extensions.ext_memory_budget.name});
         const device_handle = try self.instance.createDevice(self.physical, &.{
             .p_next = &features,
             .queue_create_info_count = 1,
@@ -759,7 +760,7 @@ pub const Device = struct {
                 .level = .primary,
                 .command_buffer_count = 1,
             }, @ptrCast(&command));
-            const fence = try self.vkd.createFence(&.{ .flags = .{ .signaled_bit = true } }, null);
+            const fence = try self.vkd.createFence(&.{ .flags = .{ .signaled = true } }, null);
             errdefer self.vkd.destroyFence(fence, null);
             const image_available = try self.vkd.createSemaphore(&.{}, null);
             errdefer self.vkd.destroySemaphore(image_available, null);
@@ -786,8 +787,8 @@ pub const Device = struct {
         self.immediate_pool = try self.vkd.createCommandPool(&.{ .queue_family_index = self.queue_family }, null);
         errdefer self.vkd.destroyCommandPool(self.immediate_pool, null);
         if (self.detached_queue != null)
-            self.detached_pool = try self.vkd.createCommandPool(&.{ .flags = .{ .reset_command_buffer_bit = true }, .queue_family_index = self.queue_family }, null);
-        errdefer if (self.detached_pool != .null_handle) self.vkd.destroyCommandPool(self.detached_pool, null);
+            self.detached_pool = try self.vkd.createCommandPool(&.{ .flags = .{ .reset_command_buffer = true }, .queue_family_index = self.queue_family }, null);
+        errdefer if (self.detached_pool != .null) self.vkd.destroyCommandPool(self.detached_pool, null);
         try self.vkd.allocateCommandBuffers(&.{
             .command_pool = self.immediate_pool,
             .level = .primary,
@@ -811,7 +812,7 @@ pub const Device = struct {
         persistPipelineCache(self) catch |err| std.log.warn("could not persist pipeline cache: {}", .{err});
         destroySwapchain(self);
         while (self.pipelines.popAny()) |pipeline| self.vkd.destroyPipeline(pipeline.handle, null);
-        if (self.compaction_pool != .null_handle) self.vkd.destroyQueryPool(self.compaction_pool, null);
+        if (self.compaction_pool != .null) self.vkd.destroyQueryPool(self.compaction_pool, null);
         while (self.accelerations.popAny()) |acceleration| {
             self.vkd.destroyAccelerationStructureKHR(acceleration.handle, null);
             self.destroyBuffer(acceleration.buffer);
@@ -850,7 +851,7 @@ pub const Device = struct {
         self.vkd.destroyCommandPool(self.immediate_pool, null);
         self.vkd.destroySemaphore(self.frame_timeline, null);
         self.vkd.destroySemaphore(self.detached_timeline, null);
-        if (self.detached_pool != .null_handle) self.vkd.destroyCommandPool(self.detached_pool, null);
+        if (self.detached_pool != .null) self.vkd.destroyCommandPool(self.detached_pool, null);
         self.vkd.destroyPipelineCache(self.pipeline_cache, null);
         if (self.pipeline_cache_path) |path| self.gpa.free(path);
         self.vkd.destroyPipelineLayout(self.pipeline_layout, null);
@@ -858,9 +859,9 @@ pub const Device = struct {
         self.vkd.destroyDescriptorSetLayout(self.descriptor_layout, null);
         self.allocator.deinit();
         self.vkd.destroyDevice(null);
-        if (self.debug_messenger != .null_handle)
+        if (self.debug_messenger != .null)
             self.instance.destroyDebugUtilsMessengerEXT(self.debug_messenger, null);
-        if (self.surface != .null_handle) self.instance.destroySurfaceKHR(self.surface, null);
+        if (self.surface != .null) self.instance.destroySurfaceKHR(self.surface, null);
         self.instance.destroyInstance(null);
         const gpa = self.gpa;
         const io = self.io;
@@ -889,7 +890,7 @@ pub const Device = struct {
         self.instance.getPhysicalDeviceMemoryProperties2(self.physical, &properties);
         const heaps = properties.memory_properties;
         for (heaps.memory_heaps[0..heaps.memory_heap_count], 0..) |heap, index| {
-            if (!heap.flags.device_local_bit) continue;
+            if (!heap.flags.device_local) continue;
             result.budget_bytes += budget.heap_budget[index];
             result.process_bytes += budget.heap_usage[index];
         }
@@ -900,7 +901,7 @@ pub const Device = struct {
         var memory_bytes: u64 = 0;
         const heaps = self.allocator.properties;
         for (heaps.memory_heaps[0..heaps.memory_heap_count]) |heap| {
-            if (heap.flags.device_local_bit) memory_bytes += heap.size;
+            if (heap.flags.device_local) memory_bytes += heap.size;
         }
         return .{
             .kind = switch (self.properties.device_type) {
@@ -1031,9 +1032,9 @@ pub const Device = struct {
         };
         const count: u32 = if (self.caps.storage_images) all_bindings.len else all_bindings.len - 2;
         const binding_flags: [all_bindings.len]vk.DescriptorBindingFlags = @splat(.{
-            .update_after_bind_bit = true,
-            .update_unused_while_pending_bit = true,
-            .partially_bound_bit = true,
+            .update_after_bind = true,
+            .update_unused_while_pending = true,
+            .partially_bound = true,
         });
         const flags_info = vk.DescriptorSetLayoutBindingFlagsCreateInfo{
             .binding_count = count,
@@ -1041,7 +1042,7 @@ pub const Device = struct {
         };
         self.descriptor_layout = try self.vkd.createDescriptorSetLayout(&.{
             .p_next = &flags_info,
-            .flags = .{ .update_after_bind_pool_bit = true },
+            .flags = .{ .update_after_bind_pool = true },
             .binding_count = count,
             .p_bindings = &all_bindings,
         }, null);
@@ -1051,7 +1052,7 @@ pub const Device = struct {
             .{ .type = .storage_image, .descriptor_count = self.storage_slots.capacity + self.storage_volume_slots.capacity },
         };
         self.descriptor_pool = try self.vkd.createDescriptorPool(&.{
-            .flags = .{ .update_after_bind_bit = true },
+            .flags = .{ .update_after_bind = true },
             .max_sets = 1,
             .pool_size_count = if (self.caps.storage_images) sizes.len else sizes.len - 1,
             .p_pool_sizes = &sizes,
@@ -1139,8 +1140,8 @@ pub fn vkFormat(format: types.Format) vk.Format {
         .a2b10g10r10_unorm => .a2b10g10r10_unorm_pack32,
         .bc7_unorm => .bc7_unorm_block,
         .bc7_srgb => .bc7_srgb_block,
-        .astc_4x4_unorm => .astc_4x_4_unorm_block,
-        .astc_4x4_srgb => .astc_4x_4_srgb_block,
+        .astc_4x4_unorm => .astc_4x4_unorm_block,
+        .astc_4x4_srgb => .astc_4x4_srgb_block,
         .bc5_unorm => .bc5_unorm_block,
         .bc4_unorm => .bc4_unorm_block,
         .bc1_unorm => .bc1_rgba_unorm_block,
@@ -1176,7 +1177,7 @@ fn debugCallback(
     const self: *Device = @ptrCast(@alignCast(user_data.?));
     const message = if (data) |value| (if (value.p_message) |pointer| std.mem.span(pointer) else "") else "";
     if (std.mem.indexOf(u8, message, ngx_object) != null) return .false;
-    if (severity.error_bit_ext) {
+    if (severity.error_ext) {
         _ = self.validation_errors.fetchAdd(1, .acq_rel);
         std.log.err("vulkan: {s}", .{message});
     } else {
@@ -1190,7 +1191,7 @@ fn destroyFrame(self: *Device, frame: *FrameData) void {
     self.vkd.destroySemaphore(frame.image_available, null);
     self.vkd.destroySemaphore(frame.generated_available, null);
     self.vkd.destroyFence(frame.fence, null);
-    for (frame.worker_pools) |pool| if (pool != .null_handle) self.vkd.destroyCommandPool(pool, null);
+    for (frame.worker_pools) |pool| if (pool != .null) self.vkd.destroyCommandPool(pool, null);
     self.vkd.destroyCommandPool(frame.pool, null);
 }
 
@@ -1206,13 +1207,13 @@ pub const scratch_alignment = 256;
 
 /// What NVIDIA's NGX, which runs DLSS, needs of a device.
 pub const ngx_extensions = [_][*:0]const u8{
-    vk.extensions.nvx_binary_import.name,
-    vk.extensions.nvx_image_view_handle.name,
-    vk.extensions.khr_push_descriptor.name,
+    vk.device_extensions.nvx_binary_import.name,
+    vk.device_extensions.nvx_image_view_handle.name,
+    vk.device_extensions.khr_push_descriptor.name,
 };
 
 pub const ray_query_extensions = [_][*:0]const u8{
-    vk.extensions.khr_deferred_host_operations.name,
-    vk.extensions.khr_acceleration_structure.name,
-    vk.extensions.khr_ray_query.name,
+    vk.device_extensions.khr_deferred_host_operations.name,
+    vk.device_extensions.khr_acceleration_structure.name,
+    vk.device_extensions.khr_ray_query.name,
 };

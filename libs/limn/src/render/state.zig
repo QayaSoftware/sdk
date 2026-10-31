@@ -1576,5 +1576,5 @@ pub const Zone = struct {
 };
 
 pub fn scaledExtent(resolution: EffectResolution, size: u32) u32 {
-    return @max(size >> @intFromEnum(resolution), 1);
+    return @max(size >> @backingInt(resolution), 1);
 }

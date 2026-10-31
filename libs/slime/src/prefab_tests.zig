@@ -186,7 +186,7 @@ test "editing at runtime through component metadata" {
     try testing.expectEqual(@as(usize, 3), info.fields.len);
     try testing.expectEqualStrings("max", info.fields[1].name);
     try testing.expectEqual(@offsetOf(Health, "max"), info.fields[1].offset);
-    try testing.expectEqual(std.builtin.TypeId.int, info.fields[1].kind);
+    try testing.expectEqual(std.lang.TypeId.int, info.fields[1].kind);
     try testing.expect(registry.infoOf(Handle).default == null);
 
     var prefab: Prefab = .init(testing.allocator);

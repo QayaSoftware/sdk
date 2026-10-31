@@ -21,10 +21,10 @@ pub const push_files: []const File = blk: {
     for (push.files) |entry| {
         const stem = entry[0];
         const module = entry[1];
-        for (@typeInfo(module).@"struct".decls) |decl| {
-            const T = @field(module, decl.name);
+        for (@typeInfo(module).@"struct".decl_names) |decl_name| {
+            const T = @field(module, decl_name);
             if (@TypeOf(T) != type or @typeInfo(T) != .@"struct" or @typeInfo(T).@"struct".layout != .@"extern") continue;
-            list = list ++ [_]File{.{ .name = stem ++ "." ++ decl.name ++ ".slang", .text = push_header ++ record(decl.name, T) }};
+            list = list ++ [_]File{.{ .name = stem ++ "." ++ decl_name ++ ".slang", .text = push_header ++ record(decl_name, T) }};
         }
     }
     break :blk list;
@@ -39,10 +39,10 @@ const header = "// Generated from src/render/core/frame_constants.zig by the bui
 fn constants(comptime prefix: []const u8, comptime namespace: type) []const u8 {
     comptime {
         var text: []const u8 = "";
-        for (@typeInfo(namespace).@"struct".decls) |decl| {
-            var name: [decl.name.len]u8 = undefined;
-            _ = std.ascii.upperString(&name, decl.name);
-            text = text ++ std.fmt.comptimePrint("static const uint {s}{s} = {d}u;\n", .{ prefix, name, @field(namespace, decl.name) });
+        for (@typeInfo(namespace).@"struct".decl_names) |decl_name| {
+            var name: [decl_name.len]u8 = undefined;
+            _ = std.ascii.upperString(&name, decl_name);
+            text = text ++ std.fmt.comptimePrint("static const uint {s}{s} = {d}u;\n", .{ prefix, name, @field(namespace, decl_name) });
         }
         return text;
     }
@@ -54,9 +54,10 @@ fn fields(comptime T: type) []const u8 {
     comptime {
         @setEvalBranchQuota(100_000);
         var text: []const u8 = "";
-        for (@typeInfo(T).@"struct".fields) |field| {
+        const info = @typeInfo(T).@"struct";
+        for (info.field_names, info.field_types) |field_name, field_type| {
             var count: ?usize = null;
-            var element = field.type;
+            var element = field_type;
             if (@typeInfo(element) == .array) {
                 const child = @typeInfo(element).array.child;
                 if (@typeInfo(child) == .array or @typeInfo(child) == .@"struct" or child == u64) {
@@ -64,8 +65,8 @@ fn fields(comptime T: type) []const u8 {
                     element = child;
                 }
             }
-            const name = if (@hasDecl(T, "references") and @hasField(@TypeOf(T.references), field.name)) @field(T.references, field.name) else typeName(element);
-            text = text ++ "    " ++ name ++ " " ++ field.name ++ (if (count) |n| std.fmt.comptimePrint("[{d}]", .{n}) else "") ++ ";\n";
+            const name = if (@hasDecl(T, "references") and @hasField(@TypeOf(T.references), field_name)) @field(T.references, field_name) else typeName(element);
+            text = text ++ "    " ++ name ++ " " ++ field_name ++ (if (count) |n| std.fmt.comptimePrint("[{d}]", .{n}) else "") ++ ";\n";
         }
         return text;
     }
@@ -75,9 +76,9 @@ fn fields(comptime T: type) []const u8 {
 fn blocks() []const u8 {
     comptime {
         var text: []const u8 = "";
-        for (@typeInfo(frame_constants.FrameConstants).@"struct".fields) |field| {
-            if (@typeInfo(field.type) != .@"struct") continue;
-            text = text ++ record(typeName(field.type), field.type);
+        for (@typeInfo(frame_constants.FrameConstants).@"struct".field_types) |field_type| {
+            if (@typeInfo(field_type) != .@"struct") continue;
+            text = text ++ record(typeName(field_type), field_type);
         }
         return text;
     }
@@ -114,9 +115,9 @@ fn typeName(comptime T: type) []const u8 {
 }
 
 test "the generated block has every field once" {
-    inline for (@typeInfo(frame_constants.FrameConstants).@"struct".fields) |field| {
-        const member = " " ++ field.name ++ ";";
-        const array = " " ++ field.name ++ "[";
+    inline for (@typeInfo(frame_constants.FrameConstants).@"struct".field_names) |field_name| {
+        const member = " " ++ field_name ++ ";";
+        const array = " " ++ field_name ++ "[";
         try std.testing.expect(std.mem.indexOf(u8, frame_slang, member) != null or std.mem.indexOf(u8, frame_slang, array) != null);
     }
     try std.testing.expect(std.mem.indexOf(u8, frame_slang, "    ShadowConstants shadows;") != null);

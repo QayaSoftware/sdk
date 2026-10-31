@@ -87,8 +87,8 @@ pub const Library = struct {
             .logging = @intFromBool(features.dlss_logging),
         });
         return .{
-            .super_resolution = offered & @intFromEnum(Feature.super_resolution) != 0,
-            .ray_reconstruction = offered & @intFromEnum(Feature.ray_reconstruction) != 0,
+            .super_resolution = offered & @backingInt(Feature.super_resolution) != 0,
+            .ray_reconstruction = offered & @backingInt(Feature.ray_reconstruction) != 0,
         };
     }
 
@@ -121,7 +121,7 @@ pub const Upscaler = struct {
         const handle = c.limnDlssCreate(&.{
             .device = rhi.native.device(device).device,
             .command_buffer = rhi.native.commandBuffer(cmd),
-            .feature = @intFromEnum(feature),
+            .feature = @backingInt(feature),
             .render_width = render_size[0],
             .render_height = render_size[1],
             .output_width = output_size[0],

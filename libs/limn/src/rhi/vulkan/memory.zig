@@ -116,7 +116,7 @@ pub const Allocator = struct {
     /// with a memory type that is device-local and host-visible, `unified` is set.
     pub fn init(allocator: std.mem.Allocator, device: Device, properties: vk.PhysicalDeviceMemoryProperties, shared: bool) Allocator {
         var result = Allocator{ .allocator = allocator, .device = device, .properties = properties };
-        const both = vk.MemoryPropertyFlags{ .device_local_bit = true, .host_visible_bit = true, .host_coherent_bit = true };
+        const both = vk.MemoryPropertyFlags{ .device_local = true, .host_visible = true, .host_coherent = true };
         for (properties.memory_types[0..properties.memory_type_count]) |memory_type| {
             if (shared and memory_type.property_flags.contains(both)) result.unified = true;
         }
@@ -152,7 +152,7 @@ pub const Allocator = struct {
         const memory_type = (if (shared_buffer) self.findShared(requirements.memory_type_bits) else null) orelse
             self.findMemoryType(requirements.memory_type_bits, class) orelse
             return error.MemoryTypeUnavailable;
-        const mapped = class != .gpu or (shared_buffer and self.properties.memory_types[memory_type].property_flags.host_visible_bit);
+        const mapped = class != .gpu or (shared_buffer and self.properties.memory_types[memory_type].property_flags.host_visible);
         const block_size: u64 = if (class == .gpu) block_size_gpu else block_size_host;
         self.used_bytes += requirements.size;
         errdefer self.used_bytes -= requirements.size;
@@ -293,7 +293,7 @@ pub const Allocator = struct {
 
     fn allocateMemory(self: *Allocator, size: u64, memory_type: u32, owner: Owner) !vk.DeviceMemory {
         var dedicated = dedicatedInfo(owner);
-        const flags = vk.MemoryAllocateFlagsInfo{ .p_next = if (owner != .none) &dedicated else null, .flags = .{ .device_address_bit = true }, .device_mask = 0 };
+        const flags = vk.MemoryAllocateFlagsInfo{ .p_next = if (owner != .none) &dedicated else null, .flags = .{ .device_address = true }, .device_mask = 0 };
         return self.device.allocateMemory(&.{
             .p_next = &flags,
             .allocation_size = size,
@@ -312,7 +312,7 @@ pub const Allocator = struct {
     }
 
     fn findShared(self: *const Allocator, allowed_types: u32) ?u32 {
-        const both = vk.MemoryPropertyFlags{ .device_local_bit = true, .host_visible_bit = true, .host_coherent_bit = true };
+        const both = vk.MemoryPropertyFlags{ .device_local = true, .host_visible = true, .host_coherent = true };
         for (0..self.properties.memory_type_count) |index| {
             if (allowed_types & (@as(u32, 1) << @intCast(index)) == 0) continue;
             if (self.properties.memory_types[index].property_flags.contains(both)) return @intCast(index);
@@ -322,11 +322,11 @@ pub const Allocator = struct {
 
     fn findMemoryType(self: *const Allocator, allowed_types: u32, class: Class) ?u32 {
         const preferences: []const vk.MemoryPropertyFlags = switch (class) {
-            .gpu => &.{ .{ .device_local_bit = true }, .{} },
-            .cpu_to_gpu => &.{.{ .host_visible_bit = true, .host_coherent_bit = true }},
+            .gpu => &.{ .{ .device_local = true }, .{} },
+            .cpu_to_gpu => &.{.{ .host_visible = true, .host_coherent = true }},
             .gpu_to_cpu => &.{
-                .{ .host_visible_bit = true, .host_coherent_bit = true, .host_cached_bit = true },
-                .{ .host_visible_bit = true, .host_coherent_bit = true },
+                .{ .host_visible = true, .host_coherent = true, .host_cached = true },
+                .{ .host_visible = true, .host_coherent = true },
             },
         };
         for (preferences) |required| {

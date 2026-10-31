@@ -117,24 +117,25 @@ fn collect(
     comptime top: bool,
 ) void {
     checkMeta(T);
-    for (@typeInfo(T).@"struct".fields) |field| {
-        const meta = metaOf(T, field.name);
-        const field_path = path ++ [_][]const u8{field.name};
-        const default: ?field.type = if (group_default) |group| @field(group, field.name) else field.defaultValue();
-        const optional = @typeInfo(field.type) == .optional;
-        const Inner = if (optional) @typeInfo(field.type).optional.child else field.type;
+    const info = @typeInfo(T).@"struct";
+    for (info.field_names, info.field_types, info.field_attrs) |field_name, Field, attrs| {
+        const meta = metaOf(T, field_name);
+        const field_path = path ++ [_][]const u8{field_name};
+        const default: ?Field = if (group_default) |group| @field(group, field_name) else attrs.defaultValue(Field);
+        const optional = @typeInfo(Field) == .optional;
+        const Inner = if (optional) @typeInfo(Field).optional.child else Field;
         if (isGroup(Inner)) {
-            if (optional) @compileError("cli: the group " ++ field.name ++ " in " ++ @typeName(T) ++ " cannot be optional");
+            if (optional) @compileError("cli: the group " ++ field_name ++ " in " ++ @typeName(T) ++ " cannot be optional");
             const inner_default: ?Inner = if (default) |group| group else null;
-            collect(Inner, field_path, long_prefix ++ value.kebab(field.name) ++ "-", env_prefix ++ value.screaming(field.name) ++ "_", inner_default, specs, command, false);
+            collect(Inner, field_path, long_prefix ++ value.kebab(field_name) ++ "-", env_prefix ++ value.screaming(field_name) ++ "_", inner_default, specs, command, false);
         } else if (@typeInfo(Inner) == .@"union") {
-            if (!top) @compileError("cli: the commands " ++ field.name ++ " in " ++ @typeName(T) ++ " must be in the struct parsed, not a group");
+            if (!top) @compileError("cli: the commands " ++ field_name ++ " in " ++ @typeName(T) ++ " must be in the struct parsed, not a group");
             if (command.* != null) @compileError("cli: " ++ @typeName(T) ++ " has two fields of commands");
-            if (@typeInfo(Inner).@"union".tag_type == null) @compileError("cli: the commands " ++ field.name ++ " in " ++ @typeName(T) ++ " must be a tagged union");
+            if (@typeInfo(Inner).@"union".tag_type == null) @compileError("cli: the commands " ++ field_name ++ " in " ++ @typeName(T) ++ " must be a tagged union");
             checkCommandMeta(Inner);
-            command.* = .{ .field = field.name, .Union = Inner, .optional = optional, .required = !optional and default == null };
+            command.* = .{ .field = field_name, .Union = Inner, .optional = optional, .required = !optional and default == null };
         } else {
-            specs.* = specs.* ++ [_]Spec{spec(field.type, Inner, field_path, long_prefix ++ value.kebab(field.name), env_prefix ++ value.screaming(field.name), default, meta)};
+            specs.* = specs.* ++ [_]Spec{spec(Field, Inner, field_path, long_prefix ++ value.kebab(field_name), env_prefix ++ value.screaming(field_name), default, meta)};
         }
     }
 }
@@ -211,24 +212,26 @@ pub fn option(comptime meta: anytype, comptime name: []const u8, comptime defaul
 
 fn checkMeta(comptime T: type) void {
     if (!@hasDecl(T, "meta")) return;
-    for (@typeInfo(@TypeOf(T.meta)).@"struct".fields) |entry| {
-        if (!@hasField(T, entry.name)) @compileError("cli: " ++ @typeName(T) ++ ".meta has " ++ entry.name ++ ", which is not a field of " ++ @typeName(T));
-        for (@typeInfo(entry.type).@"struct".fields) |key| {
+    const entries = @typeInfo(@TypeOf(T.meta)).@"struct";
+    for (entries.field_names, entries.field_types) |entry, Entry| {
+        if (!@hasField(T, entry)) @compileError("cli: " ++ @typeName(T) ++ ".meta has " ++ entry ++ ", which is not a field of " ++ @typeName(T));
+        for (@typeInfo(Entry).@"struct".field_names) |key| {
             for (option_names) |known| {
-                if (std.mem.eql(u8, key.name, known)) break;
-            } else @compileError("cli: " ++ key.name ++ " in " ++ @typeName(T) ++ ".meta." ++ entry.name ++ " is not an option; the options are help, short, long, env, positional, value_name, hidden, separator and count");
+                if (std.mem.eql(u8, key, known)) break;
+            } else @compileError("cli: " ++ key ++ " in " ++ @typeName(T) ++ ".meta." ++ entry ++ " is not an option; the options are help, short, long, env, positional, value_name, hidden, separator and count");
         }
     }
 }
 
 fn checkCommandMeta(comptime U: type) void {
     if (!@hasDecl(U, "meta")) return;
-    for (@typeInfo(@TypeOf(U.meta)).@"struct".fields) |entry| {
-        if (!@hasField(U, entry.name)) @compileError("cli: " ++ @typeName(U) ++ ".meta has " ++ entry.name ++ ", which is not a command of " ++ @typeName(U));
-        for (@typeInfo(entry.type).@"struct".fields) |key| {
+    const entries = @typeInfo(@TypeOf(U.meta)).@"struct";
+    for (entries.field_names, entries.field_types) |entry, Entry| {
+        if (!@hasField(U, entry)) @compileError("cli: " ++ @typeName(U) ++ ".meta has " ++ entry ++ ", which is not a command of " ++ @typeName(U));
+        for (@typeInfo(Entry).@"struct".field_names) |key| {
             for (command_option_names) |known| {
-                if (std.mem.eql(u8, key.name, known)) break;
-            } else @compileError("cli: " ++ key.name ++ " in " ++ @typeName(U) ++ ".meta." ++ entry.name ++ " is not an option of a command; those are help and hidden");
+                if (std.mem.eql(u8, key, known)) break;
+            } else @compileError("cli: " ++ key ++ " in " ++ @typeName(U) ++ ".meta." ++ entry ++ " is not an option of a command; those are help and hidden");
         }
     }
 }

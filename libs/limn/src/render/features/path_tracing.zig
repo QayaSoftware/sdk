@@ -655,7 +655,7 @@ pub fn pathTrace(renderer: *Renderer, p: *const ScenePass, state: *View) !bool {
             key.update(std.mem.asBytes(&light.inner_angle));
             key.update(std.mem.asBytes(&light.outer_angle));
             key.update(std.mem.asBytes(&light.source_radius));
-            key.update(&.{@intFromEnum(light.kind)});
+            key.update(&.{@backingInt(light.kind)});
         }
         key.update(std.mem.asBytes(&filled(settings.path_tracing).bounces));
         key.update(std.mem.asBytes(&filled(settings.path_tracing).clamp));

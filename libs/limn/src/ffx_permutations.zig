@@ -208,8 +208,8 @@ pub fn main(init: std.process.Init) !void {
     const out = &text.writer;
     try out.print("// {s}_permutations.h.\n// Made by src/ffx_permutations.zig in the place of FidelityFX-SC.\n\n#ifndef LIMN_{s}_PERMUTATIONS_H\n#define LIMN_{s}_PERMUTATIONS_H\n\n#include <stdint.h>\n\n", .{ pass, pass, pass });
     for (unique.items) |shader| {
-        inline for (@typeInfo(Kind).@"enum".fields, kind_names) |field, kind_name| {
-            const kind: Kind = @enumFromInt(field.value);
+        inline for (@typeInfo(Kind).@"enum".field_values, kind_names) |value, kind_name| {
+            const kind: Kind = @fromBackingInt(@intCast(value));
             var any = false;
             for (shader.resources) |resource| any = any or resource.kind == kind;
             if (any) {
@@ -256,8 +256,8 @@ pub fn main(init: std.process.Init) !void {
     try out.print("static const {s}_PermutationInfo g_{s}_PermutationInfo[] = {{\n", .{ pass, pass });
     for (unique.items) |shader| {
         try out.print("    {{ g_{s}_{s}_size, g_{s}_{s}_data, ", .{ pass, shader.digest, pass, shader.digest });
-        inline for (@typeInfo(Kind).@"enum".fields, kind_names) |field, kind_name| {
-            const kind: Kind = @enumFromInt(field.value);
+        inline for (@typeInfo(Kind).@"enum".field_values, kind_names) |value, kind_name| {
+            const kind: Kind = @fromBackingInt(@intCast(value));
             var count: usize = 0;
             for (shader.resources) |resource| count += @intFromBool(resource.kind == kind);
             if (count == 0) {
@@ -270,7 +270,11 @@ pub fn main(init: std.process.Init) !void {
         }
         try out.writeAll("},\n");
     }
-    try out.writeAll("    { 0, 0, " ++ "0, 0, 0, 0, 0, " ** kind_names.len ++ "},\n");
+    try out.writeAll(comptime blk: {
+        var line: []const u8 = "    { 0, 0, ";
+        for (kind_names) |_| line = line ++ "0, 0, 0, 0, 0, ";
+        break :blk line ++ "},\n";
+    });
     try out.writeAll("};\n\n#endif\n");
 
     var folder = try std.Io.Dir.cwd().openDir(init.io, directory, .{});

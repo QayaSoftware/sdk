@@ -151,7 +151,7 @@ pub const ComponentInfo = struct {
         /// Byte offset; in a packed struct, the byte holding the first bit.
         offset: usize,
         size: usize,
-        kind: std.builtin.TypeId,
+        kind: std.lang.TypeId,
     };
 
     pub const Json = struct {
@@ -296,11 +296,11 @@ pub fn bundleTypes(comptime Bundle: type) []const type {
         .@"struct" => |shape| shape,
         else => @compileError("slime: a bundle is a tuple of component values, like .{ Position{ .x = 1 } }"),
     };
-    if (shape.fields.len > 0 and !shape.is_tuple) @compileError("slime: a bundle is a tuple of component values, like .{ Position{ .x = 1 } }");
-    var types: [shape.fields.len]type = undefined;
-    for (shape.fields, &types) |field, *T| {
-        if (!isConcrete(field.type)) @compileError("slime: a bundle value of type " ++ @typeName(field.type) ++ " has no component type; write it as a typed literal like Position{ .x = 1 }");
-        T.* = field.type;
+    if (shape.field_types.len > 0 and !shape.is_tuple) @compileError("slime: a bundle is a tuple of component values, like .{ Position{ .x = 1 } }");
+    var types: [shape.field_types.len]type = undefined;
+    for (shape.field_types, &types) |Field, *T| {
+        if (!isConcrete(Field)) @compileError("slime: a bundle value of type " ++ @typeName(Field) ++ " has no component type; write it as a typed literal like Position{ .x = 1 }");
+        T.* = Field;
     }
     for (types, 0..) |A, i| for (types[i + 1 ..]) |B| if (A == B) @compileError("slime: " ++ @typeName(A) ++ " is in the bundle twice");
     const final = types;
@@ -310,8 +310,8 @@ pub fn bundleTypes(comptime Bundle: type) []const type {
 fn isConcrete(comptime T: type) bool {
     return switch (@typeInfo(T)) {
         .comptime_int, .comptime_float, .enum_literal, .null, .undefined, .type, .noreturn, .@"fn", .@"opaque" => false,
-        .@"struct" => |shape| for (shape.fields) |field| {
-            if (field.is_comptime) break false;
+        .@"struct" => |shape| for (shape.field_attrs) |attrs| {
+            if (attrs.@"comptime") break false;
         } else true,
         else => true,
     };
@@ -345,20 +345,20 @@ fn nameOf(comptime T: type) []const u8 {
 }
 
 fn fieldsOf(comptime T: type) []const ComponentInfo.Field {
-    const fields = switch (@typeInfo(T)) {
-        .@"struct" => |s| s.fields,
+    const shape = switch (@typeInfo(T)) {
+        .@"struct" => |s| s,
         else => return &.{},
     };
-    var out: [fields.len]ComponentInfo.Field = undefined;
+    var out: [shape.field_names.len]ComponentInfo.Field = undefined;
     var len: usize = 0;
-    for (fields) |field| {
-        if (field.is_comptime) continue;
+    for (shape.field_names, shape.field_types, shape.field_attrs) |field_name, Field, attrs| {
+        if (attrs.@"comptime") continue;
         out[len] = .{
-            .name = field.name,
-            .type_name = @typeName(field.type),
-            .offset = @bitOffsetOf(T, field.name) / 8,
-            .size = @sizeOf(field.type),
-            .kind = std.meta.activeTag(@typeInfo(field.type)),
+            .name = field_name,
+            .type_name = @typeName(Field),
+            .offset = @bitOffsetOf(T, field_name) / 8,
+            .size = @sizeOf(Field),
+            .kind = std.meta.activeTag(@typeInfo(Field)),
         };
         len += 1;
     }
@@ -376,8 +376,8 @@ fn defaultOf(comptime T: type) ?*const anyopaque {
     if (isContainer(T) and @hasDecl(T, "default") and @TypeOf(T.default) == T) return &Default(T).value;
     switch (@typeInfo(T)) {
         .@"struct" => |s| {
-            inline for (s.fields) |field| {
-                if (!field.is_comptime and field.default_value_ptr == null) return null;
+            inline for (s.field_attrs) |attrs| {
+                if (!attrs.@"comptime" and attrs.default_value_ptr == null) return null;
             }
             return &Default(T).value;
         },
@@ -395,11 +395,11 @@ fn isPlain(comptime T: type) bool {
         .array => |a| isPlain(a.child),
         .vector => |v| isPlain(v.child),
         .optional => |o| isPlain(o.child),
-        .@"struct" => |s| for (s.fields) |field| {
-            if (!field.is_comptime and !isPlain(field.type)) break false;
+        .@"struct" => |s| for (s.field_types, s.field_attrs) |Field, attrs| {
+            if (!attrs.@"comptime" and !isPlain(Field)) break false;
         } else true,
-        .@"union" => |u| for (u.fields) |field| {
-            if (!isPlain(field.type)) break false;
+        .@"union" => |u| for (u.field_types) |Field| {
+            if (!isPlain(Field)) break false;
         } else true,
         else => false,
     };
@@ -411,11 +411,11 @@ fn jsonable(comptime T: type) bool {
         .bool, .int, .float, .void, .@"enum" => true,
         .array => |a| jsonable(a.child),
         .optional => |o| jsonable(o.child),
-        .@"struct" => |s| for (s.fields) |field| {
-            if (!field.is_comptime and !jsonable(field.type)) break false;
+        .@"struct" => |s| for (s.field_types, s.field_attrs) |Field, attrs| {
+            if (!attrs.@"comptime" and !jsonable(Field)) break false;
         } else true,
-        .@"union" => |u| if (u.tag_type == null) false else for (u.fields) |field| {
-            if (!jsonable(field.type)) break false;
+        .@"union" => |u| if (u.tag_type == null) false else for (u.field_types) |Field| {
+            if (!jsonable(Field)) break false;
         } else true,
         else => false,
     };
@@ -458,12 +458,12 @@ fn writeValue(jw: *std.json.Stringify, value: anytype) std.json.Stringify.Error!
         .@"struct" => |shape| {
             if (shape.is_tuple) return jw.write(value);
             try jw.beginObject();
-            inline for (shape.fields) |field| {
-                if (field.is_comptime) continue;
-                const item = @field(value, field.name);
-                const skip = @typeInfo(field.type) == .optional and item == null and !jw.options.emit_null_optional_fields;
+            inline for (shape.field_names, shape.field_types, shape.field_attrs) |field_name, Field, attrs| {
+                if (attrs.@"comptime") continue;
+                const item = @field(value, field_name);
+                const skip = @typeInfo(Field) == .optional and item == null and !jw.options.emit_null_optional_fields;
                 if (!skip) {
-                    try jw.objectField(field.name);
+                    try jw.objectField(field_name);
                     try writeValue(jw, item);
                 }
             }
@@ -483,7 +483,7 @@ fn hashLayout(comptime T: type, hasher: *std.hash.Fnv1a_64) void {
     hasher.update(@tagName(@typeInfo(T)));
     hasher.update(std.mem.asBytes(&@as(u64, @sizeOf(T))));
     switch (@typeInfo(T)) {
-        .int => |i| hasher.update(&[_]u8{ @intFromEnum(i.signedness), @truncate(i.bits), @truncate(i.bits >> 8) }),
+        .int => |i| hasher.update(&[_]u8{ @backingInt(i.signedness), @truncate(i.bits), @truncate(i.bits >> 8) }),
         .array => |a| {
             hasher.update(std.mem.asBytes(&@as(u64, a.len)));
             hashLayout(a.child, hasher);
@@ -493,19 +493,19 @@ fn hashLayout(comptime T: type, hasher: *std.hash.Fnv1a_64) void {
             hashLayout(v.child, hasher);
         },
         .optional => |o| hashLayout(o.child, hasher),
-        .@"enum" => |e| for (e.fields) |field| {
-            hasher.update(field.name);
-            hasher.update(std.mem.asBytes(&@as(i128, field.value)));
+        .@"enum" => |e| for (e.field_names, e.field_values) |field_name, field_value| {
+            hasher.update(field_name);
+            hasher.update(std.mem.asBytes(&@as(i128, field_value)));
         },
-        .@"struct" => |s| for (s.fields) |field| {
-            if (field.is_comptime) continue;
-            hasher.update(field.name);
-            hasher.update(std.mem.asBytes(&@as(u64, @bitOffsetOf(T, field.name))));
-            hashLayout(field.type, hasher);
+        .@"struct" => |s| for (s.field_names, s.field_types, s.field_attrs) |field_name, Field, attrs| {
+            if (attrs.@"comptime") continue;
+            hasher.update(field_name);
+            hasher.update(std.mem.asBytes(&@as(u64, @bitOffsetOf(T, field_name))));
+            hashLayout(Field, hasher);
         },
-        .@"union" => |u| for (u.fields) |field| {
-            hasher.update(field.name);
-            hashLayout(field.type, hasher);
+        .@"union" => |u| for (u.field_names, u.field_types) |field_name, Field| {
+            hasher.update(field_name);
+            hashLayout(Field, hasher);
         },
         .bool, .float, .void => {},
         else => hasher.update(@typeName(T)),

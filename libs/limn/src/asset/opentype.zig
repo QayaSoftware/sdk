@@ -83,7 +83,7 @@ pub const Plan = struct {
     lookups: []u16,
     /// Per lookup, one bit per glyph: set if the lookup can start at that glyph
     /// (all set when unknown).
-    starts: []std.DynamicBitSetUnmanaged,
+    starts: []std.bit_set.Dynamic,
     /// Per lookup, the `Glyph.mask` bits it applies to.
     masks: []u32,
 
@@ -198,14 +198,14 @@ pub const Layout = struct {
             try indices.appendSlice(gpa, found);
             try masks.appendNTimes(gpa, stage.mask, found.len);
         }
-        const starts = try gpa.alloc(std.DynamicBitSetUnmanaged, indices.items.len);
+        const starts = try gpa.alloc(std.bit_set.Dynamic, indices.items.len);
         var made: usize = 0;
         errdefer {
             for (starts[0..made]) |*set| set.deinit(gpa);
             gpa.free(starts);
         }
         for (indices.items, starts) |index, *set| {
-            set.* = try std.DynamicBitSetUnmanaged.initEmpty(gpa, glyph_count);
+            set.* = try std.bit_set.Dynamic.initEmpty(gpa, glyph_count);
             made += 1;
             self.markStarts(index, set) catch set.setRangeValue(.{ .start = 0, .end = glyph_count }, true);
         }
@@ -215,7 +215,7 @@ pub const Layout = struct {
     }
 
     /// Sets the glyphs a lookup's subtables can start at.
-    fn markStarts(self: Layout, index: u16, set: *std.DynamicBitSetUnmanaged) !void {
+    fn markStarts(self: Layout, index: u16, set: *std.bit_set.Dynamic) !void {
         const reader = self.reader;
         const lookup = (try self.lookupAt(index)) orelse return;
         const kind = try reader.u16At(lookup);

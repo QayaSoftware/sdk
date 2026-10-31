@@ -265,7 +265,7 @@ pub fn shadeScene(renderer: *Renderer, p: *const ScenePass, lighting: *const Lig
         .ao_texture = if (occluded.occlusion) |texture| device.textureIndex(texture) else gpu.invalid_id,
         .bounce_texture = if (occluded.light) |texture| device.textureIndex(texture) else gpu.invalid_id,
         .bounce_strength = if (settings.ambient_occlusion) |occlusion| occlusion.bounce else 0,
-        .debug_view = @intFromEnum(settings.debug_view),
+        .debug_view = @backingInt(settings.debug_view),
         .gi_texture = if (gathered_gi) |texture| device.textureIndex(texture) else gpu.invalid_id,
         .material_shader = 0,
         .shadow_history = if (filled(settings.shadows).light_filter and settings.resolution.temporal_antialiasing and view.history_valid and !debugging)

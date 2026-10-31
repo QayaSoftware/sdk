@@ -258,9 +258,9 @@ fn forgetMaterialImage(self: *Renderer, image: Image) void {
         const entry = if (self.models.internal.table.slotAt(slot_index).value) |*value| value else continue;
         for (entry.material_images, 0..) |*textures, index| {
             var used = false;
-            inline for (@typeInfo(MaterialTextures).@"struct".fields) |field| {
-                if (field.type == ?Image) if (@field(textures, field.name)) |set| if (set.id == image.id) {
-                    @field(textures, field.name) = null;
+            inline for (@typeInfo(MaterialTextures).@"struct".field_names) |field_name| {
+                if (@FieldType(MaterialTextures, field_name) == ?Image) if (@field(textures, field_name)) |set| if (set.id == image.id) {
+                    @field(textures, field_name) = null;
                     used = true;
                 };
             }

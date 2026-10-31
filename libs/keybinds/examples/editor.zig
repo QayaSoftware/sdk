@@ -33,10 +33,10 @@ const overrides =
 
 fn printMenu(map: *const Map) !void {
     var buffer: [128]u8 = undefined;
-    inline for (@typeInfo(Action).@"enum".fields) |field| {
+    inline for (@typeInfo(Action).@"enum".field_names) |field_name| {
         var writer: std.Io.Writer = .fixed(&buffer);
-        try map.describe(&writer, @field(Action, field.name));
-        std.debug.print("  {s:<10} {s}\n", .{ field.name, writer.buffered() });
+        try map.describe(&writer, @field(Action, field_name));
+        std.debug.print("  {s:<10} {s}\n", .{ field_name, writer.buffered() });
     }
 }
 

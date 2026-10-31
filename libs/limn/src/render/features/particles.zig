@@ -170,8 +170,9 @@ pub fn drawParticles(renderer: *Renderer, cmd: *rhi.CommandEncoder, scene: *Scen
             }
         }
     }
-    var fallback = std.heap.stackFallback(64 * @sizeOf(Emitter), renderer.internal.gpa);
-    const ordering = fallback.get();
+    var buffer: [64]Emitter = undefined;
+    var fallback: std.heap.BufferFirstAllocator = .init(@ptrCast(&buffer), renderer.internal.gpa);
+    const ordering = fallback.allocator();
     const ordered = try ordering.alloc(Emitter, scene.emitters.items.len);
     defer ordering.free(ordered);
     @memcpy(ordered, scene.emitters.items);

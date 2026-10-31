@@ -28,7 +28,7 @@ fn textureIndex(self: *Renderer, entry: *ModelEntry, reference: ?gltf.TextureRef
 /// Shared material samplers; `anisotropic` for color and normal maps.
 fn materialSampler(self: *Renderer, data: gltf.SamplerData, anisotropic: bool) !rhi.Sampler {
     const key = @as(usize, @intFromBool(anisotropic)) * 18 + @as(usize, @intFromBool(data.linear)) * 9 +
-        @as(usize, @intFromEnum(data.repeat_u)) * 3 + @intFromEnum(data.repeat_v);
+        @as(usize, @backingInt(data.repeat_u)) * 3 + @backingInt(data.repeat_v);
     if (self.internal.material_samplers[key]) |sampler| return sampler;
     const filter: rhi.Filter = if (data.linear) .linear else .nearest;
     const sampler = try self.device.createSampler(.{
@@ -145,8 +145,8 @@ pub const Materials = struct {
         const self = materials.renderer();
         self.lock();
         defer self.unlock();
-        inline for (@typeInfo(MaterialTextures).@"struct".fields) |field| {
-            if (field.type == ?api.Image) if (@field(textures, field.name)) |image| if (!self.images.valid(image)) return error.InvalidImage;
+        inline for (@typeInfo(MaterialTextures).@"struct".field_names) |field_name| {
+            if (@FieldType(MaterialTextures, field_name) == ?api.Image) if (@field(textures, field_name)) |image| if (!self.images.valid(image)) return error.InvalidImage;
         }
         const entry = self.models.internal.table.get(model) orelse return;
         const source = entry.source orelse return error.ModelNotReady;

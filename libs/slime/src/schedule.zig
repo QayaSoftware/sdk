@@ -394,10 +394,10 @@ fn indexOf(names: []const []const u8, name: []const u8) ?usize {
 }
 
 fn checkOptions(comptime Options: type, comptime allowed: []const []const u8) void {
-    for (@typeInfo(Options).@"struct".fields) |field| {
+    for (@typeInfo(Options).@"struct".field_names) |field_name| {
         for (allowed) |name| {
-            if (std.mem.eql(u8, field.name, name)) break;
-        } else @compileError("slime: unknown option ." ++ field.name);
+            if (std.mem.eql(u8, field_name, name)) break;
+        } else @compileError("slime: unknown option ." ++ field_name);
     }
 }
 
@@ -426,8 +426,8 @@ fn labelsOf(comptime options: anytype, comptime field: []const u8) []const Label
 /// One label or a tuple of them.
 fn labelsFrom(comptime value: anytype) []const Label {
     const info = @typeInfo(@TypeOf(value));
-    if (info != .@"struct" or !(info.@"struct".is_tuple or info.@"struct".fields.len == 0)) return &.{Label.of(value)};
-    var labels: [info.@"struct".fields.len]Label = undefined;
+    if (info != .@"struct" or !(info.@"struct".is_tuple or info.@"struct".field_names.len == 0)) return &.{Label.of(value)};
+    var labels: [info.@"struct".field_names.len]Label = undefined;
     for (&labels, 0..) |*label, i| label.* = Label.of(value[i]);
     const final = labels;
     return &final;
@@ -451,8 +451,8 @@ fn typesOf(comptime options: anytype, comptime field: []const u8) []const type {
     if (T == type) return &.{value};
     switch (@typeInfo(T)) {
         .pointer => return value,
-        .@"struct" => |shape| if (shape.is_tuple or shape.fields.len == 0) {
-            var types: [shape.fields.len]type = undefined;
+        .@"struct" => |shape| if (shape.is_tuple or shape.field_types.len == 0) {
+            var types: [shape.field_types.len]type = undefined;
             for (&types, 0..) |*slot, i| slot.* = value[i];
             const final = types;
             return &final;
