@@ -1,8 +1,6 @@
 # Slime ECS
 
-An experiment on ECS built in 3 days. Made for learning purposes and primarily for my game engine https://github.com/Tofaa2/framework
-As framework was missing an in house entity component system that had prefabs and parallel scheduling and atomic getMut for components.
-Slime is still very barebones and experimental, Ill be patching it up if i find stuff related to my engine
+An experiment on ECS 
 
 ## Slime Prefabs
 Prefabs for slime are essentially an id, mask and a set of components. There is a binary format for performance and a human readable/editable approach using json.
