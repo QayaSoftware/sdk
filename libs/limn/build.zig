@@ -199,6 +199,7 @@ pub fn build(lib: *Sdk.Library) void {
     lib.addNamedLazyPath("shader_include", lib.path(shader_dir));
 
     const renderer = lib.module;
+    lib.import(renderer, "handles");
     renderer.sanitize_thread = thread_sanitizer;
     renderer.addImport("vulkan", vulkan.module("vulkan-zig"));
     const volk = b.lazyDependency("volk", .{}) orelse return;

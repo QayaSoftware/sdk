@@ -1,3 +1,6 @@
+//! Generational handles: 64-bit IDs in place of pointers, which a
+//! `HandleTable` resolves to its values and stops resolving once a value is
+//! removed, so a stale handle reads as null instead of another value.
 const std = @import("std");
 
 /// 64-bit generational handle: a slot index plus the slot's generation at

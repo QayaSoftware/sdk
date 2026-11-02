@@ -1,7 +1,7 @@
 //! Models: loading, building their GPU records and freeing them. Internal to the renderer.
 const std = @import("std");
 const geometry_feature = @import("../features/geometry.zig");
-const handle = @import("../../handle.zig");
+const handle = @import("handles");
 const rhi = @import("../../rhi/rhi.zig");
 const math = @import("../../math.zig");
 const gltf = @import("../../asset/gltf.zig");

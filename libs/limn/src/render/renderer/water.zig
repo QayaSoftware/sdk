@@ -1,7 +1,7 @@
 //! Water surfaces. Internal to the renderer.
 const std = @import("std");
 const simulation_feature = @import("../features/simulation.zig");
-const handle = @import("../../handle.zig");
+const handle = @import("handles");
 const math = @import("../../math.zig");
 const api = @import("../api.zig");
 const renderer_state = @import("../state.zig");

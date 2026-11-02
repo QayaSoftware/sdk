@@ -110,6 +110,19 @@ pub const Library = struct {
     /// The modules besides `module` that its docs show.
     documented: std.ArrayList([]const u8) = .empty,
 
+    /// Gives `module` the SDK library `name` as an import. Its module is the
+    /// one an application gets when `name` is built, so add `name` before
+    /// this library; otherwise it is created for this library alone.
+    pub fn import(lib: *Library, module: *std.Build.Module, comptime name: []const u8) void {
+        const b = lib.b;
+        const imported = b.modules.get(name) orelse b.createModule(.{
+            .root_source_file = b.path("libs/" ++ name ++ "/src/root.zig"),
+            .target = lib.target,
+            .optimize = lib.optimize,
+        });
+        module.addImport(name, imported);
+    }
+
     /// `sub_path` in the library.
     pub fn path(lib: *Library, sub_path: []const u8) std.Build.LazyPath {
         return lib.b.path(lib.b.pathJoin(&.{ lib.root, sub_path }));

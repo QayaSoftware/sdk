@@ -286,7 +286,6 @@ pub const Alignment = draw_list.Alignment;
 
 test {
     _ = @import("math.zig");
-    _ = @import("handle.zig");
     _ = @import("asset/gltf.zig");
     _ = @import("asset/model_cache.zig");
     _ = @import("asset/ktx2.zig");

@@ -1,6 +1,6 @@
 //! Particle emitters. Internal to the renderer.
 const std = @import("std");
-const handle = @import("../../handle.zig");
+const handle = @import("handles");
 const renderer_state = @import("../state.zig");
 const rhi = @import("../../rhi/rhi.zig");
 const gpu = @import("../gpu.zig");

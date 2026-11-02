@@ -2,7 +2,7 @@
 //! whole list at once. A handle keeps naming the same light while others come
 //! and go. Internal to the renderer.
 const std = @import("std");
-const handle = @import("../../handle.zig");
+const handle = @import("handles");
 const api = @import("../api.zig");
 const render = @import("../renderer.zig");
 

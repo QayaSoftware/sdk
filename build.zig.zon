@@ -19,6 +19,11 @@
             .hash = "zstbi-0.11.0-dev-L0Ea_wGXBwCvXIzUWRNZe-6FpofI_nz4uAOQ4O0Fuxko",
             .lazy = true,
         },
+        .miniaudio = .{
+            .url = "git+https://github.com/mackron/miniaudio?ref=0.11.26#877ea4a7c2601c7b0f2a44e83dfac42e6470fea6",
+            .hash = "N-V-__8AAOYywgAhjsrAElPOjbuG-0yZyujq-XyG4tf353h2",
+            .lazy = true,
+        },
         .vulkan_headers = .{
             .url = "git+https://github.com/KhronosGroup/Vulkan-Headers?ref=vulkan-sdk-1.4.357.0#e3b1eec08173d6b825cd3ac88c885a63b621504a",
             .hash = "N-V-__8AAO2WewIbm0OeFBxoD5LxmEzZigF1yXmgGLuahMD5",

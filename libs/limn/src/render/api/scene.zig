@@ -2,7 +2,7 @@
 const std = @import("std");
 const math = @import("../../math.zig");
 const animation = @import("../animation.zig");
-const handle = @import("../../handle.zig");
+const handle = @import("handles");
 const render = @import("../renderer.zig");
 const view_math = @import("../renderer/view_math.zig");
 

@@ -1,7 +1,7 @@
 //! Plain-data descriptions used by the RHI. Nothing here touches Vulkan.
 const std = @import("std");
 const builtin = @import("builtin");
-const Handle = @import("../handle.zig").Handle;
+const Handle = @import("handles").Handle;
 
 /// Type tags that make handles of different resources distinct types.
 pub const BufferTag = opaque {};

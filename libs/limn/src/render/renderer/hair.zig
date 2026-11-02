@@ -1,6 +1,6 @@
 //! Hair and the collision fields it is simulated against. Internal to the renderer.
 const std = @import("std");
-const handle = @import("../../handle.zig");
+const handle = @import("handles");
 const math = @import("../../math.zig");
 const api = @import("../api.zig");
 const renderer_state = @import("../state.zig");

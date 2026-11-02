@@ -1,6 +1,6 @@
 //! Fluid volumes and the pictures saved from them. Internal to the renderer.
 const std = @import("std");
-const handle = @import("../../handle.zig");
+const handle = @import("handles");
 const rhi = @import("../../rhi/rhi.zig");
 const png = @import("../../png.zig");
 const gpu = @import("../gpu.zig");

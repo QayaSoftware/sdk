@@ -1,7 +1,7 @@
 //! Handles to the renderer's objects.
 const gltf = @import("../../asset/gltf.zig");
 const animation = @import("../animation.zig");
-const handle = @import("../../handle.zig");
+const handle = @import("handles");
 const draw_list = @import("../draw_list.zig");
 const font_module = @import("font_baker").font;
 
