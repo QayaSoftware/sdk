@@ -8,13 +8,15 @@ const Device = device_module.Device;
 const AccelerationResource = device_module.AccelerationResource;
 const retire = @import("objects.zig").retire;
 const scratch_alignment = device_module.scratch_alignment;
+const micromaps_module = @import("micromaps.zig");
 
 /// Most structures that can wait for their compacted size at once.
 pub const compaction_capacity = 512;
 
 /// The geometries and triangle counts of `desc`, in `geometries` and
 /// `triangles`; the count of geometries.
-fn blasGeometries(self: *Device, desc: types.BlasDesc, geometries: *[types.max_blas_geometries]vk.AccelerationStructureGeometryKHR, triangles: *[types.max_blas_geometries]u32) !u32 {
+/// Geometries with an opacity micromap point into `micromaps`.
+fn blasGeometries(self: *Device, desc: types.BlasDesc, geometries: *[types.max_blas_geometries]vk.AccelerationStructureGeometryKHR, triangles: *[types.max_blas_geometries]u32, micromaps: *[types.max_blas_geometries]vk.AccelerationStructureTrianglesOpacityMicromapEXT) !u32 {
     if (desc.geometries.len == 0 or desc.geometries.len > types.max_blas_geometries) return error.InvalidBlasDesc;
     for (desc.geometries, 0..) |geometry, index| {
         if (geometry.vertex_count == 0) return error.InvalidBlasDesc;
@@ -32,6 +34,11 @@ fn blasGeometries(self: *Device, desc: types.BlasDesc, geometries: *[types.max_b
             } },
         };
         triangles[index] = geometry.index_count / 3;
+        if (geometry.opacity) |micromap| {
+            if (geometry.solid) return error.InvalidBlasDesc;
+            micromaps[index] = try micromaps_module.geometryMicromap(self, micromap, triangles[index]);
+            geometries[index].geometry.triangles.p_next = &micromaps[index];
+        }
     }
     return @intCast(desc.geometries.len);
 }
@@ -64,7 +71,8 @@ pub fn createBlas(self: *Device, desc: types.BlasDesc) !types.AccelerationStruct
     if (!self.caps.ray_tracing) return error.RayTracingUnavailable;
     var geometries: [types.max_blas_geometries]vk.AccelerationStructureGeometryKHR = undefined;
     var triangles: [types.max_blas_geometries]u32 = undefined;
-    const count = try blasGeometries(self, desc, &geometries, &triangles);
+    var micromaps: [types.max_blas_geometries]vk.AccelerationStructureTrianglesOpacityMicromapEXT = undefined;
+    const count = try blasGeometries(self, desc, &geometries, &triangles, &micromaps);
     var sizes: vk.AccelerationStructureBuildSizesInfoKHR = .{
         .acceleration_structure_size = 0,
         .update_scratch_size = 0,
@@ -99,7 +107,7 @@ pub fn createTlas(self: *Device, desc: types.TlasDesc) !types.AccelerationStruct
     };
     self.vkd.getAccelerationStructureBuildSizesKHR(.device_khr, &.{
         .type = .top_level_khr,
-        .flags = tlasFlags(desc.updatable),
+        .flags = tlasFlags(desc.updatable, desc.build),
         .mode = .build_khr,
         .geometry_count = 1,
         .p_geometries = @ptrCast(&geometry),
@@ -110,12 +118,13 @@ pub fn createTlas(self: *Device, desc: types.TlasDesc) !types.AccelerationStruct
     errdefer self.destroyAcceleration(acceleration);
     const resource = self.accelerationResource(acceleration);
     resource.updatable = desc.updatable;
+    resource.build = desc.build;
     resource.scratch = try self.createBuffer(.{ .name = "tlas scratch", .size = scratch_size + scratch_alignment, .usage = .{ .storage = true } });
     return acceleration;
 }
 
-fn tlasFlags(updatable: bool) vk.BuildAccelerationStructureFlagsKHR {
-    return .{ .prefer_fast_build_khr = true, .allow_update_khr = updatable };
+fn tlasFlags(updatable: bool, build: types.BuildPreference) vk.BuildAccelerationStructureFlagsKHR {
+    return .{ .prefer_fast_trace_khr = build == .fast_trace, .prefer_fast_build_khr = build == .fast_build, .allow_update_khr = updatable };
 }
 
 /// Deferred like `destroyBuffer`; also releases its buffers.
@@ -156,12 +165,13 @@ pub fn buildBlasesCommand(self: *Device, command: vk.CommandBuffer, builds: []co
         const batch = builds[start..@min(start + batch_size, builds.len)];
         var geometries: [batch_size][types.max_blas_geometries]vk.AccelerationStructureGeometryKHR = undefined;
         var triangles: [batch_size][types.max_blas_geometries]u32 = undefined;
+        var micromaps: [batch_size][types.max_blas_geometries]vk.AccelerationStructureTrianglesOpacityMicromapEXT = undefined;
         var ranges: [batch_size][types.max_blas_geometries]vk.AccelerationStructureBuildRangeInfoKHR = undefined;
         var range_pointers: [batch_size][*]const vk.AccelerationStructureBuildRangeInfoKHR = undefined;
         var infos: [batch_size]vk.AccelerationStructureBuildGeometryInfoKHR = undefined;
         for (batch, 0..) |build, index| {
             const resource = self.accelerationResource(build.blas);
-            const count = try blasGeometries(self, build.desc, &geometries[index], &triangles[index]);
+            const count = try blasGeometries(self, build.desc, &geometries[index], &triangles[index], &micromaps[index]);
             for (0..count) |at| ranges[index][at] = .{ .primitive_count = triangles[index][at], .primitive_offset = 0, .first_vertex = 0, .transform_offset = 0 };
             range_pointers[index] = &ranges[index];
             if (resource.dynamic and resource.scratch == null)
@@ -260,7 +270,7 @@ pub fn buildTlasCommand(self: *Device, command: vk.CommandBuffer, tlas: types.Ac
     const ranges = [_][*]const vk.AccelerationStructureBuildRangeInfoKHR{@ptrCast(&range)};
     self.vkd.cmdBuildAccelerationStructuresKHR(command, &.{.{
         .type = .top_level_khr,
-        .flags = tlasFlags(resource.updatable),
+        .flags = tlasFlags(resource.updatable, resource.build),
         .mode = if (refit) .update_khr else .build_khr,
         .src_acceleration_structure = if (refit) resource.handle else .null,
         .dst_acceleration_structure = resource.handle,

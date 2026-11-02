@@ -27,6 +27,8 @@ pub fn createBuffer(self: *Device, desc: types.BufferDesc) !types.Buffer {
             .indirect_buffer = desc.usage.indirect,
             .acceleration_structure_build_input_read_only_khr = desc.usage.acceleration_input and self.caps.ray_tracing,
             .acceleration_structure_storage_khr = desc.usage.acceleration_storage and self.caps.ray_tracing,
+            .micromap_build_input_read_only_ext = desc.usage.micromap_input and self.caps.opacity_micromaps,
+            .micromap_storage_ext = desc.usage.micromap_storage and self.caps.opacity_micromaps,
             .transfer_src = desc.usage.copy_src,
             .transfer_dst = true,
             .shader_device_address = true,

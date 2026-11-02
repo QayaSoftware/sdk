@@ -32,6 +32,7 @@ pub const TextureOptions = api.TextureOptions;
 pub const GeometryOptions = api.GeometryOptions;
 pub const CacheOptions = api.CacheOptions;
 pub const ImageDesc = api.ImageDesc;
+pub const ModelOptions = api.ModelOptions;
 pub const EnvironmentDesc = api.EnvironmentDesc;
 pub const SceneEnvironment = api.SceneEnvironment;
 pub const ShaderAssignment = api.ShaderAssignment;
@@ -287,6 +288,7 @@ pub const Alignment = draw_list.Alignment;
 test {
     _ = @import("math.zig");
     _ = @import("asset/gltf.zig");
+    _ = @import("asset/fbx.zig");
     _ = @import("asset/model_cache.zig");
     _ = @import("asset/ktx2.zig");
     _ = @import("asset/dds.zig");

@@ -13,6 +13,7 @@ const CommandEncoder = @import("command.zig").CommandEncoder;
 const buffers_module = @import("device/buffers.zig");
 const textures_module = @import("device/textures.zig");
 const acceleration_module = @import("device/acceleration.zig");
+const micromaps_module = @import("device/micromaps.zig");
 const pipelines_module = @import("device/pipelines.zig");
 const presentation_module = @import("device/presentation.zig");
 const frames_module = @import("device/frames.zig");
@@ -121,8 +122,30 @@ pub const AccelerationResource = struct {
     compaction_slot: ?u32 = null,
     /// Top level: built so that it can be updated.
     updatable: bool = false,
+    /// Top level: what its builds favor.
+    build: types.BuildPreference = .fast_trace,
     /// Top level: instances in the last build, which an update must keep.
     instance_count: u32 = 0,
+};
+
+/// From `Device.micromapResource`.
+pub const MicromapResource = struct {
+    handle: vk.MicromapEXT,
+    buffer: types.Buffer,
+    /// Its triangles and their data, read by its build and freed after it.
+    data: types.Buffer = .invalid,
+    triangles: types.Buffer = .invalid,
+    /// Where in them the input starts, at 256-byte aligned addresses.
+    data_offset: u64 = 0,
+    triangles_offset: u64 = 0,
+    /// Per triangle: the triangle's own index, or a special index for a
+    /// whole-triangle state. Read by the builds of structures that use it.
+    indices: types.Buffer,
+    /// Triangles that use their micro-triangles, for the builds' usage counts.
+    usage: vk.MicromapUsageEXT,
+    triangle_count: u32,
+    scratch_size: u64,
+    built: bool = false,
 };
 
 /// From `Device.pipelineResource`.
@@ -138,6 +161,7 @@ pub const Deletion = union(enum) {
     sampler: vk.Sampler,
     pipeline: vk.Pipeline,
     acceleration: vk.AccelerationStructureKHR,
+    micromap: vk.MicromapEXT,
     texture_slot: u32,
     sampler_slot: u32,
     storage_slot: u32,
@@ -189,6 +213,10 @@ pub const StagingRing = struct {
 
     pub const Fence = struct { end: u64, value: u64 };
 };
+
+/// A staging buffer an upload has finished with, free to fill again once
+/// the frame timeline reaches `ready_at`.
+pub const SpareStaging = struct { buffer: types.Buffer, size: u64, ready_at: u64 };
 
 /// While open, `work` holds the encoder's count at the start; once closed,
 /// what the scope recorded.
@@ -314,6 +342,7 @@ pub const Device = struct {
     /// HDR output was requested; `hdr_active` says whether it was granted.
     hdr_wanted: bool = false,
     accelerations: HandleTable(AccelerationResource, types.AccelerationTag),
+    micromaps: HandleTable(MicromapResource, types.MicromapTag),
     /// Sizes that bottom-level structures compact to, made on first use.
     compaction_pool: vk.QueryPool = .null,
     compaction_slots: std.bit_set.Static(acceleration_module.compaction_capacity) = .empty,
@@ -388,6 +417,9 @@ pub const Device = struct {
     /// Host-visible buffer most uploads are staged in, made on first use.
     staging_ring: types.Buffer = .invalid,
     ring: StagingRing = .{},
+    /// Staging buffers of past uploads too large for the ring, kept for
+    /// reuse; see `frames.createStaging`.
+    spare_staging: std.ArrayList(SpareStaging) = .empty,
     timings: [max_timing_scopes]types.PassTiming = undefined,
     timing_count: u32 = 0,
     /// Command pool and buffer behind `beginImmediate`.
@@ -447,6 +479,11 @@ pub const Device = struct {
 
         pub fn fenceRing(loop: *FrameLoop) void {
             frames_module.fenceRing(loop.device());
+        }
+
+        /// Takes back a staging buffer once its upload is recorded.
+        pub fn releaseStaging(loop: *FrameLoop, buffer: types.Buffer) void {
+            frames_module.releaseStaging(loop.device(), buffer);
         }
     };
 
@@ -615,7 +652,19 @@ pub const Device = struct {
             self.instance.getPhysicalDeviceFeatures2(self.physical, &supported);
             break :blk fault.device_fault == .true;
         };
+        if (self.caps.ray_tracing and try deviceExtensionListed(gpa, self.instance, self.physical, vk.device_extensions.ext_opacity_micromap.name)) {
+            var micromap = vk.PhysicalDeviceOpacityMicromapFeaturesEXT{};
+            var supported = vk.PhysicalDeviceFeatures2{ .p_next = &micromap, .features = .{} };
+            self.instance.getPhysicalDeviceFeatures2(self.physical, &supported);
+            var micromap_limits = vk.PhysicalDeviceOpacityMicromapPropertiesEXT{ .max_opacity_2_state_subdivision_level = 0, .max_opacity_4_state_subdivision_level = 0 };
+            var properties = vk.PhysicalDeviceProperties2{ .p_next = &micromap_limits, .properties = undefined };
+            self.instance.getPhysicalDeviceProperties2(self.physical, &properties);
+            self.caps.opacity_micromaps = micromap.micromap == .true;
+            self.caps.max_opacity_subdivision = micromap_limits.max_opacity_4_state_subdivision_level;
+        }
         var chain = FeatureChain{};
+        var micromap_features = vk.PhysicalDeviceOpacityMicromapFeaturesEXT{ .micromap = .true };
+        if (self.caps.opacity_micromaps) chain.add(&micromap_features);
         var fault_features = vk.PhysicalDeviceFaultFeaturesEXT{ .device_fault = .true };
         if (self.device_fault) chain.add(&fault_features);
         var mesh_shader_features = vk.PhysicalDeviceMeshShaderFeaturesEXT{ .task_shader = .true, .mesh_shader = .true };
@@ -682,6 +731,7 @@ pub const Device = struct {
         if (self.surface != .null) extensions.add(&.{vk.device_extensions.khr_swapchain.name});
         if (try deviceExtensionListed(gpa, self.instance, self.physical, vk.device_extensions.khr_portability_subset.name)) extensions.add(&.{vk.device_extensions.khr_portability_subset.name});
         if (self.caps.ray_tracing) extensions.add(&ray_query_extensions);
+        if (self.caps.opacity_micromaps) extensions.add(&.{vk.device_extensions.ext_opacity_micromap.name});
         if (self.caps.nvidia_ngx) extensions.add(&ngx_extensions);
         if (self.caps.shared_textures) extensions.add(&.{vk.device_extensions.khr_external_memory_fd.name});
         for ([_][*:0]const u8{ vk.device_extensions.khr_get_memory_requirements_2.name, vk.device_extensions.khr_dedicated_allocation.name }) |extension| {
@@ -715,6 +765,7 @@ pub const Device = struct {
         self.samplers = .init(gpa);
         self.pipelines = .init(gpa);
         self.accelerations = .init(gpa);
+        self.micromaps = .init(gpa);
         const capacities = descriptorCapacities(self.instance, self.physical);
         self.texture_slots = try SlotAllocator.init(gpa, capacities.textures);
         errdefer self.texture_slots.deinit(gpa);
@@ -818,6 +869,7 @@ pub const Device = struct {
             self.destroyBuffer(acceleration.buffer);
             if (acceleration.scratch) |scratch| self.destroyBuffer(scratch);
         }
+        while (self.micromaps.popAny()) |micromap| self.vkd.destroyMicromapEXT(micromap.handle, null);
         while (self.samplers.popAny()) |sampler| self.vkd.destroySampler(sampler.handle, null);
         while (self.textures.popAny()) |texture_value| {
             var texture = texture_value;
@@ -838,11 +890,13 @@ pub const Device = struct {
         self.deletions.deinit(self.gpa);
         self.uploads.deinit(self.gpa);
         self.spare_uploads.deinit(self.gpa);
+        self.spare_staging.deinit(self.gpa);
         self.buffers.deinit();
         self.textures.deinit();
         self.samplers.deinit();
         self.pipelines.deinit();
         self.accelerations.deinit();
+        self.micromaps.deinit();
         self.texture_slots.deinit(self.gpa);
         self.storage_slots.deinit(self.gpa);
         self.storage_volume_slots.deinit(self.gpa);
@@ -974,6 +1028,9 @@ pub const Device = struct {
     pub const createTlas = acceleration_module.createTlas;
     pub const destroyAcceleration = acceleration_module.destroyAcceleration;
     pub const accelerationResource = acceleration_module.accelerationResource;
+    pub const createOpacityMicromap = micromaps_module.createOpacityMicromap;
+    pub const destroyOpacityMicromap = micromaps_module.destroyOpacityMicromap;
+    pub const micromapResource = micromaps_module.micromapResource;
     pub const accelerationAddress = acceleration_module.accelerationAddress;
     pub const accelerationBuilt = acceleration_module.accelerationBuilt;
     pub const compactedBlasSize = acceleration_module.compactedBlasSize;

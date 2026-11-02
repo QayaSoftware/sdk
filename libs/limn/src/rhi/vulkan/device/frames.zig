@@ -166,6 +166,11 @@ pub fn waitQueue(self: *Device) !void {
 pub fn waitIdle(self: *Device) !void {
     finishPacedPresent(self);
     try waitQueue(self);
+    {
+        self.lockResources();
+        defer self.unlockResources();
+        for (self.spare_staging.items) |*spare| spare.ready_at = 0;
+    }
     if (!self.in_frame) collectGarbage(self, true);
 }
 
@@ -293,21 +298,62 @@ pub const Staging = struct {
     }
 };
 
+/// Most bytes of spare staging buffers kept for reuse.
+const spare_staging_limit = 256 * 1024 * 1024;
+
 /// Copies `data` into the staging ring, or into a buffer of its own when it
-/// is a quarter of the ring or more or the ring is full.
+/// is a quarter of the ring or more or the ring is full. Such buffers are
+/// reused from upload to upload, so that a model's worth of large uploads
+/// does not create and free one each.
 pub fn createStaging(self: *Device, data: []const u8) !Staging {
     if (data.len < staging_ring_size / 4) if (try ringSpace(self, data.len)) |offset| {
         @memcpy(self.mapped(self.staging_ring)[@intCast(offset)..][0..data.len], data);
         return .{ .buffer = self.staging_ring, .offset = offset };
     };
-    const staging = try self.createBuffer(.{
+    const staging = takeSpareStaging(self, data.len) orelse try self.createBuffer(.{
         .name = "staging",
-        .size = data.len,
+        .size = stagingSize(data.len),
         .usage = .{ .copy_src = true },
         .memory = .cpu_to_gpu,
     });
     @memcpy(self.mapped(staging)[0..data.len], data);
     return .{ .buffer = staging };
+}
+
+/// `size` rounded up to an eighth of its power of two, so that buffers fit
+/// later uploads of about the same size.
+fn stagingSize(size: usize) u64 {
+    const step = @max(std.math.ceilPowerOfTwoAssert(u64, size) / 8, 64 * 1024);
+    return std.mem.alignForward(u64, size, step);
+}
+
+/// The smallest spare buffer the GPU is done with that holds `size` bytes
+/// without wasting more than half of it.
+fn takeSpareStaging(self: *Device, size: usize) ?types.Buffer {
+    const reached = self.vkd.getSemaphoreCounterValue(self.frame_timeline) catch return null;
+    var best: ?usize = null;
+    for (self.spare_staging.items, 0..) |spare, index| {
+        if (spare.ready_at > reached or spare.size < size or spare.size / 2 > size) continue;
+        if (best == null or spare.size < self.spare_staging.items[best.?].size) best = index;
+    }
+    return self.spare_staging.orderedRemove(best orelse return null).buffer;
+}
+
+/// Keeps a staging buffer whose upload has been recorded for reuse once
+/// the frame being recorded has finished, dropping the oldest beyond
+/// `spare_staging_limit`.
+pub fn releaseStaging(self: *Device, buffer: types.Buffer) void {
+    self.lockResources();
+    defer self.unlockResources();
+    const size = self.bufferSize(buffer);
+    self.spare_staging.append(self.gpa, .{ .buffer = buffer, .size = size, .ready_at = self.frame_number + 1 }) catch return self.destroyBuffer(buffer);
+    var total: u64 = 0;
+    for (self.spare_staging.items) |spare| total += spare.size;
+    while (total > spare_staging_limit) {
+        const oldest = self.spare_staging.orderedRemove(0);
+        total -= oldest.size;
+        self.destroyBuffer(oldest.buffer);
+    }
 }
 
 fn ringSpace(self: *Device, size: usize) !?u64 {

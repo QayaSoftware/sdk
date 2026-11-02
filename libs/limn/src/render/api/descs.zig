@@ -403,6 +403,19 @@ pub const ImageDesc = struct {
     compressed: bool = false,
 };
 
+/// See `Renderer.models.loadWith`: what a model file cannot say about
+/// itself.
+pub const ModelOptions = struct {
+    /// Its normal maps point green down the image, as DirectX does.
+    directx_normal_maps: bool = false,
+    /// FBX: its specular map holds roughness in green and metalness in
+    /// blue, as NVIDIA's ORCA scenes use it. Its red, meant for occlusion,
+    /// is not used: in those scenes it darkens all sky and bounce light.
+    packed_specular: bool = false,
+    /// Multiplies every material's emission.
+    emissive_strength: f32 = 1,
+};
+
 /// See `Renderer.environments.load`.
 pub const EnvironmentDesc = struct {
     /// An equirectangular `.hdr`, or a KTX2 cube of half floats or BC6H.

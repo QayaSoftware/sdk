@@ -1,6 +1,6 @@
-//! glTF 2.0 import: optimizes geometry into meshlets, decodes images in
-//! parallel and keeps node/skin/animation data. CPU only; safe off the
-//! render thread.
+//! glTF 2.0 and FBX import: optimizes geometry into meshlets, decodes
+//! images in parallel and keeps node/skin/animation data. CPU only; safe off
+//! the render thread.
 const std = @import("std");
 const zmesh = @import("zmesh");
 const zstbi = @import("zstbi");
@@ -8,6 +8,7 @@ const texture_codec = @import("texture_codec");
 const model_cache = @import("model_cache.zig");
 const ktx2 = @import("ktx2.zig");
 const dds = @import("dds.zig");
+const fbx = @import("fbx.zig");
 const math = @import("../math.zig");
 const build_features = @import("build_features");
 const gltf = zmesh.io.zcgltf;
@@ -295,6 +296,8 @@ pub const Image = struct {
     /// Key in the asset cache; 0 when none.
     cache_key: u64 = 0,
     normal_map: bool = false,
+    /// A normal map in DirectX's convention, its green inverted as it loads.
+    flip_green: bool = false,
     /// For images in a file of their own: its path, and a stamp of its size and
     /// modification time when read.
     source_path: []const u8 = "",
@@ -525,13 +528,14 @@ pub fn readFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ![]align(1
     return bytes;
 }
 
-/// Loads and processes a `.glb`/`.gltf` file. Requires `acquireLibraries`.
-/// The caller owns the result and must `deinit` it.
+/// Loads and processes a `.glb`, `.gltf` or `.fbx` file. Requires
+/// `acquireLibraries`. The caller owns the result and must `deinit` it.
 pub fn load(gpa: std.mem.Allocator, io: std.Io, path: []const u8, options: LoadOptions) !Model {
     const model_cache_dir: ?[]const u8 = if (options.compress_textures) options.cache_dir else null;
     var salt = std.hash.Wyhash.init(@intFromBool(options.lods.clusters));
     salt.update(std.mem.asBytes(&[2]f32{ options.lods.normal_weight, options.lods.uv_weight }));
-    salt.update(&.{@intFromBool(options.normal_maps_bc5)});
+    salt.update(&.{ @intFromBool(options.normal_maps_bc5), @intFromBool(options.directx_normal_maps), @intFromBool(options.packed_specular) });
+    salt.update(std.mem.asBytes(&options.emissive_strength));
     if (options.cache_dir != null) salt.update(std.mem.asBytes(&bufferStamp(gpa, io, path)));
     const cache_salt = salt.final();
     if (model_cache_dir) |directory| {
@@ -541,35 +545,41 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, path: []const u8, options: LoadO
     errdefer model.deinit();
     const arena = model.arena.allocator();
 
-    const bytes = try readFile(gpa, io, path);
-    defer gpa.free(bytes);
-    const parse_options = gltf.Options{ .memory = parser_memory };
-    const data = try gltf.parse(parse_options, bytes);
-    defer gltf.free(data);
-    const path_z = try gpa.dupeSentinel(u8, path, 0);
-    defer gpa.free(path_z);
-    try gltf.loadBuffers(parse_options, data, path_z.ptr);
-    try checkRequired(data);
-    try decodeMeshopt(data);
-    if (build_features.validate_input and gltf.validate(data) != .success) return error.InvalidGltf;
+    var bytes: ?[]align(16) u8 = null;
+    defer if (bytes) |read| gpa.free(read);
+    var data: ?*gltf.Data = null;
+    defer if (data) |parsed| gltf.free(parsed);
+    var scene: ?*fbx.Scene = null;
+    defer if (scene) |opened| fbx.close(opened);
+    var sources: []ImageSource = &.{};
+    if (std.ascii.endsWithIgnoreCase(path, ".fbx")) {
+        scene = try fbx.open(gpa, io, path);
+        sources = try fbx.loadMaterials(arena, io, scene.?, path, &model, options);
+    } else {
+        bytes = try readFile(gpa, io, path);
+        const parse_options = gltf.Options{ .memory = parser_memory };
+        data = try gltf.parse(parse_options, bytes.?);
+        const path_z = try gpa.dupeSentinel(u8, path, 0);
+        defer gpa.free(path_z);
+        try gltf.loadBuffers(parse_options, data.?, path_z.ptr);
+        try checkRequired(data.?);
+        try decodeMeshopt(data.?);
+        if (build_features.validate_input and gltf.validate(data.?) != .success) return error.InvalidGltf;
+        sources = try gltfImages(arena, io, data.?, path, &model);
+    }
+    for (model.materials) |*material| {
+        for (&material.emissive) |*value| value.* *= options.emissive_strength;
+    }
+    if (options.directx_normal_maps) for (model.images) |*image| {
+        image.flip_green = image.normal_map;
+    };
 
-    model.images = try arena.alloc(Image, data.images_count);
-    for (model.images) |*image| image.* = .{};
-    try loadMaterials(arena, data, &model);
-    const jobs = try gpa.alloc(ImageJob, data.images_count);
+    const jobs = try gpa.alloc(ImageJob, sources.len);
     defer gpa.free(jobs);
     var group: std.Io.Group = .init;
     errdefer group.cancel(io);
-    for (jobs, 0..) |*job, index| {
-        job.* = .{ .gpa = gpa, .io = io, .source = &data.images.?[index], .model_path = path, .output = &model.images[index], .options = options };
-        if (data.images.?[index].buffer_view == null) if (data.images.?[index].uri) |uri_pointer| {
-            const uri = std.mem.span(uri_pointer);
-            if (std.mem.indexOf(u8, uri, ";base64,") == null) {
-                const image_path = try std.fs.path.join(arena, &.{ std.fs.path.dirname(path) orelse ".", uri });
-                model.images[index].source_path = image_path;
-                model.images[index].source_stamp = modelKey(io, image_path) catch 0;
-            }
-        };
+    for (jobs, sources, model.images) |*job, source, *image| {
+        job.* = .{ .gpa = gpa, .io = io, .source = source, .model_path = path, .output = image, .options = options };
         group.async(io, decodeImage, .{job});
     }
 
@@ -582,11 +592,13 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, path: []const u8, options: LoadO
         model.instances = cached.instances;
         model.skins = cached.skins;
         model.animations = cached.animations;
+    } else if (scene) |opened| {
+        try fbx.loadGeometry(gpa, arena, opened, &model, options.lods);
     } else {
-        try loadNodes(arena, data, &model);
-        try loadMeshes(gpa, arena, data, &model, options.lods);
-        try loadSkins(gpa, arena, data, &model);
-        try loadAnimations(gpa, arena, data, &model);
+        try loadNodes(arena, data.?, &model);
+        try loadMeshes(gpa, arena, data.?, &model, options.lods);
+        try loadSkins(gpa, arena, data.?, &model);
+        try loadAnimations(gpa, arena, data.?, &model);
     }
 
     try group.await(io);
@@ -598,14 +610,43 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, path: []const u8, options: LoadO
     return model;
 }
 
+/// Gives a glTF file's images and materials to `model`, and where each image
+/// is read from.
+fn gltfImages(arena: std.mem.Allocator, io: std.Io, data: *gltf.Data, path: []const u8, model: *Model) ![]ImageSource {
+    model.images = try arena.alloc(Image, data.images_count);
+    for (model.images) |*image| image.* = .{};
+    try loadMaterials(arena, data, model);
+    const sources = try arena.alloc(ImageSource, data.images_count);
+    for (sources, model.images, 0..) |*source, *image, index| {
+        source.* = .{ .gltf = &data.images.?[index] };
+        if (data.images.?[index].buffer_view == null) if (data.images.?[index].uri) |uri_pointer| {
+            const uri = std.mem.span(uri_pointer);
+            if (std.mem.indexOf(u8, uri, ";base64,") == null) {
+                image.source_path = try std.fs.path.join(arena, &.{ std.fs.path.dirname(path) orelse ".", uri });
+                image.source_stamp = modelKey(io, image.source_path) catch 0;
+            }
+        };
+    }
+    return sources;
+}
+
 fn elementIndex(comptime T: type, base: ?[*]T, pointer: *const T) u32 {
     return @intCast((@intFromPtr(pointer) - @intFromPtr(base.?)) / @sizeOf(T));
 }
 
+/// Where an image's encoded bytes are.
+pub const ImageSource = union(enum) {
+    gltf: *const gltf.Image,
+    /// A file of its own.
+    path: []const u8,
+    /// Bytes the model file holds.
+    bytes: []const u8,
+};
+
 const ImageJob = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
-    source: *const gltf.Image,
+    source: ImageSource,
     model_path: []const u8,
     output: *Image,
     options: LoadOptions,
@@ -686,7 +727,7 @@ fn decodeMeshopt(data: *gltf.Data) !void {
     }
 }
 
-const max_image_size = 16384;
+pub const max_image_size = 16384;
 
 /// `error.ImageTooLarge` for an image wider or taller than `max_image_size`,
 /// read from its header before anything is allocated for it.
@@ -708,17 +749,26 @@ fn decodeBounded(encoded: []const u8) !zstbi.Image {
 
 fn decodeImageInner(job: *ImageJob) !void {
     if (job.output.uses == 0) return;
-    var owned: ?[]u8 = null;
+    var owned: ?[]align(16) u8 = null;
     defer if (owned) |bytes| job.gpa.free(bytes);
-    const encoded: []const u8 = if (job.source.buffer_view) |view| blk: {
+    const source = switch (job.source) {
+        .gltf => |image| image,
+        .bytes => |bytes| return decodeEncoded(job, bytes),
+        .path => |path| {
+            const file_bytes = try readFile(job.gpa, job.io, path);
+            defer job.gpa.free(file_bytes);
+            return decodeEncoded(job, file_bytes);
+        },
+    };
+    const encoded: []const u8 = if (source.buffer_view) |view| blk: {
         const buffer = view.buffer.data orelse return error.MissingImageData;
         break :blk @as([*]const u8, @ptrCast(buffer))[view.offset..][0..view.size];
-    } else if (job.source.uri) |uri_pointer| blk: {
+    } else if (source.uri) |uri_pointer| blk: {
         const uri = std.mem.span(uri_pointer);
         const marker = ";base64,";
         if (std.mem.indexOf(u8, uri, marker)) |marker_index| {
             const text = uri[marker_index + marker.len ..];
-            const decoded = try job.gpa.alloc(u8, try std.base64.standard.Decoder.calcSizeForSlice(text));
+            const decoded = try job.gpa.alignedAlloc(u8, .@"16", try std.base64.standard.Decoder.calcSizeForSlice(text));
             owned = decoded;
             try std.base64.standard.Decoder.decode(decoded, text);
             break :blk decoded;
@@ -732,7 +782,11 @@ fn decodeImageInner(job: *ImageJob) !void {
         owned = file_bytes;
         break :blk file_bytes;
     } else return error.MissingImageData;
+    return decodeEncoded(job, encoded);
+}
 
+/// Decodes or transcodes one image's file bytes into `job.output`.
+fn decodeEncoded(job: *ImageJob, encoded: []const u8) !void {
     if (ktx2.isKtx2(encoded)) {
         const texture = try ktx2.read(job.gpa, encoded, job.options.basis);
         errdefer job.gpa.free(texture.data);
@@ -752,6 +806,7 @@ fn decodeImageInner(job: *ImageJob) !void {
         job.output.height = texture.height;
         job.output.mip_levels = texture.levels;
         job.output.compressed = texture.data;
+        if (job.output.flip_green) flipCompressedGreen(job.output, texture.data);
         return;
     }
     if (dds.isDds(encoded)) {
@@ -768,11 +823,13 @@ fn decodeImageInner(job: *ImageJob) !void {
         job.output.height = texture.height;
         job.output.mip_levels = texture.levels;
         job.output.compressed = try job.gpa.dupe(u8, texture.data);
+        if (job.output.flip_green) flipCompressedGreen(job.output, job.output.compressed.?);
         return;
     }
     if (!job.options.compress_textures and job.options.raw_mips) {
         var decoded = try decodeBounded(encoded);
         defer decoded.deinit();
+        if (job.output.flip_green) invertGreen(decoded.data);
         job.output.width = decoded.width;
         job.output.height = decoded.height;
         job.output.compressed = try texture_codec.rawChain(job.gpa, decoded.data, decoded.width, decoded.height, job.output.srgb);
@@ -781,6 +838,7 @@ fn decodeImageInner(job: *ImageJob) !void {
     }
     if (!job.options.compress_textures) {
         const decoded = try decodeBounded(encoded);
+        if (job.output.flip_green) invertGreen(decoded.data);
         job.output.width = decoded.width;
         job.output.height = decoded.height;
         job.output.decoded = decoded;
@@ -788,7 +846,7 @@ fn decodeImageInner(job: *ImageJob) !void {
     }
 
     var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    job.output.cache_key = textureKey(encoded, job.output.srgb);
+    job.output.cache_key = textureKey(encoded, job.output.srgb, job.output.flip_green);
     job.output.two_channel = job.options.normal_maps_bc5 and job.output.normal_map and !job.output.srgb;
     job.output.one_channel = job.options.normal_maps_bc5 and job.output.uses != 0 and job.output.uses == job.output.occlusion_uses and !job.output.two_channel and !job.output.srgb;
     const extension: []const u8 = if (job.output.two_channel) "bc5" else if (job.output.one_channel) "bc4" else "bc7";
@@ -802,6 +860,7 @@ fn decodeImageInner(job: *ImageJob) !void {
     };
     var decoded = try decodeBounded(encoded);
     defer decoded.deinit();
+    if (job.output.flip_green) invertGreen(decoded.data);
     job.output.width = decoded.width;
     job.output.height = decoded.height;
     const data = try texture_codec.encodeChain(job.gpa, decoded.data, decoded.width, decoded.height, job.output.srgb, if (job.output.two_channel) .bc5 else if (job.output.one_channel) .bc4 else .bc7);
@@ -814,6 +873,68 @@ fn decodeImageInner(job: *ImageJob) !void {
         writeCacheFile(job.io, job.options.cache_dir.?, path, &.{ &header, data }) catch |err|
             std.log.warn("texture cache: could not write {s}: {s}", .{ path, @errorName(err) });
     }
+}
+
+/// Inverts green in RGBA8 pixels.
+fn invertGreen(pixels: []u8) void {
+    var index: usize = 1;
+    while (index < pixels.len) : (index += 4) pixels[index] = 255 - pixels[index];
+}
+
+/// Inverts green in `image`'s mip chain `data`, block by block, exactly.
+fn flipCompressedGreen(image: *const Image, data: []u8) void {
+    if (image.two_channel) {
+        var offset: usize = 0;
+        while (offset + 16 <= data.len) : (offset += 16) invertBc4(data[offset + 8 ..][0..8]);
+        return;
+    }
+    if (image.one_channel) return;
+    switch (image.block) {
+        .bc1 => {
+            var offset: usize = 0;
+            while (offset + 8 <= data.len) : (offset += 8) invertBc1Green(data[offset..][0..8], false);
+        },
+        .bc3 => {
+            var offset: usize = 0;
+            while (offset + 16 <= data.len) : (offset += 16) invertBc1Green(data[offset + 8 ..][0..8], true);
+        },
+        .rgba8 => invertGreen(data),
+        else => std.log.warn("a {s} normal map cannot be turned from DirectX's convention; it loads unchanged", .{@tagName(image.block)}),
+    }
+}
+
+/// Inverts one BC4 block's channel. The endpoints swap places so that the
+/// block keeps its mode, and the indices follow them.
+fn invertBc4(block: *[8]u8) void {
+    const first = block[0];
+    const second = block[1];
+    const map: [8]u64 = if (first > second) .{ 1, 0, 7, 6, 5, 4, 3, 2 } else .{ 1, 0, 5, 4, 3, 2, 7, 6 };
+    const bits = std.mem.readInt(u48, block[2..8], .little);
+    var remapped: u48 = 0;
+    for (0..16) |texel| {
+        const shift: u6 = @intCast(texel * 3);
+        remapped |= @intCast(map[@as(u3, @truncate(bits >> shift))] << shift);
+    }
+    block[0] = 255 - second;
+    block[1] = 255 - first;
+    std.mem.writeInt(u48, block[2..8], remapped, .little);
+}
+
+/// Inverts the green of one BC1 color block. Without `four_colors` (BC1
+/// proper) the endpoints' order picks the mode, so they swap back into it.
+fn invertBc1Green(block: *[8]u8, four_colors: bool) void {
+    const first = std.mem.readInt(u16, block[0..2], .little);
+    const second = std.mem.readInt(u16, block[2..4], .little);
+    var new_first = first ^ 0x07e0;
+    var new_second = second ^ 0x07e0;
+    var indices = std.mem.readInt(u32, block[4..8], .little);
+    if (!four_colors and (first > second) != (new_first > new_second)) {
+        std.mem.swap(u16, &new_first, &new_second);
+        indices ^= if (first > second) 0x55555555 else ~(indices >> 1) & 0x55555555;
+    }
+    std.mem.writeInt(u16, block[0..2], new_first, .little);
+    std.mem.writeInt(u16, block[2..4], new_second, .little);
+    std.mem.writeInt(u32, block[4..8], indices, .little);
 }
 
 /// A `KHR_lights_punctual` light, placed by its node.
@@ -880,14 +1001,24 @@ pub const LoadOptions = struct {
     normal_maps_bc5: bool = true,
     /// What Basis Universal textures are transcoded to, by what the GPU reads.
     basis: ktx2.BasisTarget = .bc,
+    /// Normal maps point green down the image, as DirectX does; they are
+    /// turned to glTF's convention as they load. Block-compressed maps can be
+    /// turned only from BC1, BC3 and BC5.
+    directx_normal_maps: bool = false,
+    /// FBX: the specular map holds roughness in green and metalness in
+    /// blue, as NVIDIA's ORCA scenes use it. Its red, meant for occlusion,
+    /// is not used: in those scenes it darkens all sky and bounce light.
+    packed_specular: bool = false,
+    /// Multiplies every material's emission.
+    emissive_strength: f32 = 1,
 };
 
 const cache_magic = [4]u8{ 'R', 'T', 'E', 'X' };
 
-fn textureKey(encoded: []const u8, srgb: bool) u64 {
+fn textureKey(encoded: []const u8, srgb: bool, flip_green: bool) u64 {
     var hasher = std.hash.Wyhash.init(texture_codec.version);
     hasher.update(encoded);
-    hasher.update(&.{@intFromBool(srgb)});
+    hasher.update(&.{ @intFromBool(srgb), @intFromBool(flip_green) });
     return hasher.final();
 }
 
@@ -966,7 +1097,7 @@ fn bufferStamp(gpa: std.mem.Allocator, io: std.Io, path: []const u8) u64 {
 
 /// Hashes path, size and modification time. Images a `.gltf` references by
 /// URI are not included.
-fn modelKey(io: std.Io, path: []const u8) !u64 {
+pub fn modelKey(io: std.Io, path: []const u8) !u64 {
     const file = try std.Io.Dir.cwd().openFile(io, path, .{});
     defer file.close(io);
     const stat = try file.stat(io);
@@ -1165,8 +1296,7 @@ pub fn equirectDirection(u: f32, v: f32) [3]f32 {
 
 fn textureRef(data: *gltf.Data, model: *Model, view: gltf.TextureView, srgb: bool) ?TextureRef {
     const texture = view.texture orelse return null;
-    const image = (if (texture.has_basisu != 0) texture.basisu_image else null) orelse texture.image orelse return null;
-    const index = ddsImage(data, texture) orelse elementIndex(gltf.Image, data.images, image);
+    const index = ddsImage(data, texture) orelse elementIndex(gltf.Image, data.images, (if (texture.has_basisu != 0) texture.basisu_image else null) orelse texture.image orelse return null);
     if (srgb) model.images[index].srgb = true;
     model.images[index].uses += 1;
     var sampler: SamplerData = .{};
@@ -1315,7 +1445,7 @@ fn loadNodes(arena: std.mem.Allocator, data: *gltf.Data, model: *Model) !void {
     }
 }
 
-const FatVertex = extern struct {
+pub const FatVertex = extern struct {
     vertex: FullVertex,
     skin: SkinVertex,
     /// Index of this vertex in the file, before reordering.
@@ -1402,7 +1532,7 @@ fn findAttribute(primitive: *const gltf.Primitive, kind: gltf.AttributeType) ?*g
 }
 
 /// RGB or RGBA floats to RGBA8 with red in the low byte.
-fn packColor(values: []const f32) u32 {
+pub fn packColor(values: []const f32) u32 {
     var result: u32 = 0xff000000;
     for (values, 0..) |value, channel| {
         const byte: u32 = @intFromFloat(std.math.clamp(value, 0, 1) * 255 + 0.5);
@@ -1909,7 +2039,7 @@ fn buildClusterHierarchy(
     return .{ .indices = indices, .meshlets = meshlets, .lod0_index_count = lod0_index_count, .lod0_meshlet_count = @intCast(lod0_meshlet_count) };
 }
 
-fn finishMesh(
+pub fn finishMesh(
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
     source: []FatVertex,
@@ -2101,7 +2231,7 @@ fn finishMesh(
 
 /// Reorders vertices so those the coarser levels use come first; see
 /// `Mesh.coarse_vertex_count`.
-fn coarseFirst(gpa: std.mem.Allocator, mesh: *Mesh) !void {
+pub fn coarseFirst(gpa: std.mem.Allocator, mesh: *Mesh) !void {
     if (mesh.skin != null or mesh.morph_targets != 0) return;
     if (mesh.lod0_meshlet_count == 0 or mesh.lod0_meshlet_count >= mesh.meshlets.len) return;
     var floor: f32 = 0;
@@ -2497,7 +2627,7 @@ test "a node that is its own child is refused" {
 
 /// Writes `text` to `path`, making its directory first: the build's cache
 /// need not be where the tests run.
-fn writeTestFile(io: std.Io, path: []const u8, text: []const u8) !void {
+pub fn writeTestFile(io: std.Io, path: []const u8, text: []const u8) !void {
     try std.Io.Dir.cwd().createDirPath(io, std.fs.path.dirname(path) orelse ".");
     const file = try std.Io.Dir.cwd().createFile(io, path, .{});
     defer file.close(io);
@@ -2566,6 +2696,40 @@ test "a required extension the loader lacks is refused" {
     try std.testing.expectError(error.UnsupportedExtension, load(std.testing.allocator, io, path, .{}));
 }
 
+test "a texture with only an MSFT_texture_dds image loads it" {
+    const io = std.testing.io;
+    acquireLibraries(io);
+    defer releaseLibraries(io);
+    var file: [136]u8 = @splat(0);
+    file[0..4].* = "DDS ".*;
+    std.mem.writeInt(u32, file[12..16], 4, .little);
+    std.mem.writeInt(u32, file[16..20], 4, .little);
+    std.mem.writeInt(u32, file[28..32], 1, .little);
+    file[84..88].* = "DXT1".*;
+    const image_path = ".zig-cache/limn-test-only-dds.dds";
+    try writeTestFile(io, image_path, &file);
+    defer std.Io.Dir.cwd().deleteFile(io, image_path) catch {};
+    const positions = [9]f32{ 0, 0, 0, 1, 0, 0, 0, 1, 0 };
+    var encoded: [64]u8 = undefined;
+    var text: [1024]u8 = undefined;
+    const json = try std.fmt.bufPrint(&text,
+        \\{{"asset":{{"version":"2.0"}},"extensionsUsed":["MSFT_texture_dds"],"extensionsRequired":["MSFT_texture_dds"],
+        \\"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0}}],
+        \\"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}},"material":0}}]}}],
+        \\"accessors":[{{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}}],
+        \\"bufferViews":[{{"buffer":0,"byteLength":36}}],
+        \\"buffers":[{{"byteLength":36,"uri":"data:application/octet-stream;base64,{s}"}}],
+        \\"images":[{{"uri":"limn-test-only-dds.dds"}}],"textures":[{{"extensions":{{"MSFT_texture_dds":{{"source":0}}}}}}],
+        \\"materials":[{{"pbrMetallicRoughness":{{"baseColorTexture":{{"index":0}}}}}}]}}
+    , .{std.base64.standard.Encoder.encode(&encoded, std.mem.sliceAsBytes(&positions))});
+    const path = ".zig-cache/limn-test-only-dds.gltf";
+    try writeTestFile(io, path, json);
+    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+    var model = try load(std.testing.allocator, io, path, .{});
+    defer model.deinit();
+    try std.testing.expectEqual(@as(u32, 0), model.materials[0].base_color_texture.?.image);
+}
+
 extern fn meshopt_encodeVertexBuffer(buffer: [*]u8, buffer_size: usize, vertices: *const anyopaque, count: usize, size: usize) usize;
 extern fn meshopt_encodeIndexBuffer(buffer: [*]u8, buffer_size: usize, indices: [*]const u32, count: usize) usize;
 
@@ -2621,4 +2785,67 @@ test "meshopt-compressed geometry loads the same as plain" {
     defer actual.deinit();
     try std.testing.expectEqualDeep(expected.meshes[0].vertices, actual.meshes[0].vertices);
     try std.testing.expectEqualSlices(u32, expected.meshes[0].indices, actual.meshes[0].indices);
+}
+
+/// One BC4 block's 16 values as a GPU decodes them, before rounding.
+fn decodeBc4(block: [8]u8) [16]f32 {
+    const first: f32 = @floatFromInt(block[0]);
+    const second: f32 = @floatFromInt(block[1]);
+    var palette: [8]f32 = .{ first, second, 0, 0, 0, 0, 0, 255 };
+    if (block[0] > block[1]) {
+        for (2..8) |index| palette[index] = (@as(f32, @floatFromInt(8 - index)) * first + @as(f32, @floatFromInt(index - 1)) * second) / 7;
+    } else {
+        for (2..6) |index| palette[index] = (@as(f32, @floatFromInt(6 - index)) * first + @as(f32, @floatFromInt(index - 1)) * second) / 5;
+        palette[6] = 0;
+    }
+    const bits = std.mem.readInt(u48, block[2..8], .little);
+    var values: [16]f32 = undefined;
+    for (&values, 0..) |*value, texel| value.* = palette[@as(u3, @truncate(bits >> @intCast(texel * 3)))];
+    return values;
+}
+
+/// The green of one BC1 color block's 16 texels, before rounding; null for
+/// transparent texels.
+fn decodeBc1Green(block: [8]u8, four_colors: bool) [16]?f32 {
+    const first = std.mem.readInt(u16, block[0..2], .little);
+    const second = std.mem.readInt(u16, block[2..4], .little);
+    const expand = struct {
+        fn green(color: u16) f32 {
+            const six: u16 = (color >> 5) & 63;
+            return @floatFromInt((six << 2) | (six >> 4));
+        }
+    }.green;
+    const a = expand(first);
+    const b = expand(second);
+    const palette: [4]?f32 = if (four_colors or first > second)
+        .{ a, b, (2 * a + b) / 3, (a + 2 * b) / 3 }
+    else
+        .{ a, b, (a + b) / 2, null };
+    const indices = std.mem.readInt(u32, block[4..8], .little);
+    var values: [16]?f32 = undefined;
+    for (&values, 0..) |*value, texel| value.* = palette[@as(u2, @truncate(indices >> @intCast(texel * 2)))];
+    return values;
+}
+
+test "inverting green in BC4 and BC1 blocks inverts every texel" {
+    var prng = std.Random.DefaultPrng.init(7);
+    const random = prng.random();
+    for (0..4096) |round| {
+        var block: [8]u8 = undefined;
+        random.bytes(&block);
+        if (round % 16 == 0) block[1] = block[0];
+        const before = decodeBc4(block);
+        var flipped = block;
+        invertBc4(&flipped);
+        for (before, decodeBc4(flipped)) |old, new| try std.testing.expectApproxEqAbs(255 - old, new, 1e-3);
+
+        for ([_]bool{ false, true }) |four_colors| {
+            const colors = decodeBc1Green(block, four_colors);
+            var color_flipped = block;
+            invertBc1Green(&color_flipped, four_colors);
+            for (colors, decodeBc1Green(color_flipped, four_colors)) |old, new| {
+                if (old) |value| try std.testing.expectApproxEqAbs(255 - value, new.?, 1e-3) else try std.testing.expect(new == null);
+            }
+        }
+    }
 }

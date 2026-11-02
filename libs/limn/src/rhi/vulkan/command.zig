@@ -9,6 +9,7 @@ const vk = @import("vulkan");
 const types = @import("../types.zig");
 const device_module = @import("device.zig");
 const acceleration = @import("device/acceleration.zig");
+const micromaps = @import("device/micromaps.zig");
 const pipelines = @import("device/pipelines.zig");
 const textures = @import("device/textures.zig");
 const Device = device_module.Device;
@@ -629,7 +630,7 @@ pub const CommandEncoder = struct {
         switch (upload) {
             .buffer => |copy| {
                 self.copyBuffer(copy.staging, copy.destination, copy.staging_offset, copy.offset, copy.size);
-                if (ownsStaging(device, copy.staging)) device.destroyBuffer(copy.staging);
+                if (ownsStaging(device, copy.staging)) device.internal.releaseStaging(copy.staging);
                 copied_buffers.* = true;
             },
             .texture => |copy| {
@@ -647,7 +648,7 @@ pub const CommandEncoder = struct {
                     .image_offset = .{ .x = @intCast(region[0]), .y = @intCast(region[1]), .z = 0 },
                     .image_extent = .{ .width = region[2], .height = region[3], .depth = 1 },
                 }});
-                if (copy.last and ownsStaging(device, copy.staging)) device.destroyBuffer(copy.staging);
+                if (copy.last and ownsStaging(device, copy.staging)) device.internal.releaseStaging(copy.staging);
             },
             .mips => |texture| self.generateMips(texture),
             .copy => |copy| {
@@ -682,6 +683,39 @@ pub const CommandEncoder = struct {
         }});
     }
 
+    /// Copies `count` mips, all layers, from `source` starting at
+    /// `source_mip` to `destination` starting at `destination_mip`: levels
+    /// of the same size and formats of the same texel or block size, as when
+    /// a streamed texture gains or drops its largest levels and keeps the
+    /// rest. Sampled ones return to `shader_read` before the next work that
+    /// could sample them.
+    pub fn copyTextureMips(self: *CommandEncoder, source: types.Texture, source_mip: u32, destination: types.Texture, destination_mip: u32, count: u32) void {
+        const from = self.device.textureResource(source);
+        const to = self.device.textureResource(destination);
+        std.debug.assert(source_mip + count <= from.info.mip_levels and destination_mip + count <= to.info.mip_levels);
+        std.debug.assert(from.info.layers == to.info.layers);
+        self.settleExcept(&.{});
+        for (0..count) |level| {
+            const at: u32 = @intCast(level);
+            const extent = mipExtent(from.info, source_mip + at);
+            const target = mipExtent(to.info, destination_mip + at);
+            std.debug.assert(extent.width == target.width and extent.height == target.height);
+            self.transitionMip(source, source_mip + at, .copy_src);
+            self.transitionMip(destination, destination_mip + at, .copy_dst);
+            self.flush();
+            self.work.transfers += 1;
+            self.device.vkd.cmdCopyImage(self.command, from.image, .transfer_src_optimal, to.image, .transfer_dst_optimal, &.{.{
+                .src_subresource = .{ .aspect_mask = from.aspect, .mip_level = source_mip + at, .base_array_layer = 0, .layer_count = from.info.layers },
+                .src_offset = .{ .x = 0, .y = 0, .z = 0 },
+                .dst_subresource = .{ .aspect_mask = to.aspect, .mip_level = destination_mip + at, .base_array_layer = 0, .layer_count = to.info.layers },
+                .dst_offset = .{ .x = 0, .y = 0, .z = 0 },
+                .extent = .{ .width = extent.width, .height = extent.height, .depth = 1 },
+            }});
+            self.owe(.{ .texture = source, .mip = source_mip + at });
+            self.owe(.{ .texture = destination, .mip = destination_mip + at });
+        }
+    }
+
     /// Fills mips 1..n from mip 0 with linear blits and leaves the whole
     /// texture in `shader_read`.
     pub fn generateMips(self: *CommandEncoder, texture: types.Texture) void {
@@ -703,6 +737,22 @@ pub const CommandEncoder = struct {
             }}, .linear);
         }
         self.transition(texture, .shader_read);
+    }
+
+    /// Builds opacity micromaps made by `Device.createOpacityMicromap`, before
+    /// the structures that use them; ones already built are skipped. Their
+    /// input is freed once recorded.
+    pub fn buildOpacityMicromaps(self: *CommandEncoder, built: []const types.OpacityMicromap) !void {
+        std.debug.assert(!self.rendering);
+        self.work.builds += @intCast(built.len);
+        self.flush();
+        try micromaps.buildMicromapsCommand(self.device, self.command, built);
+        self.waitMemory(.{
+            .src_stage_mask = .{ .micromap_build_ext = true },
+            .src_access_mask = .{ .micromap_write_ext = true },
+            .dst_stage_mask = .{ .acceleration_structure_build_khr = true },
+            .dst_access_mask = .{ .micromap_read_ext = true },
+        });
     }
 
     /// Builds a bottom-level structure from geometry already on the GPU.

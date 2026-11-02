@@ -57,6 +57,7 @@ pub fn destroyNow(self: *Device, object: Deletion) void {
         .sampler => |sampler| self.vkd.destroySampler(sampler, null),
         .pipeline => |pipeline| self.vkd.destroyPipeline(pipeline, null),
         .acceleration => |acceleration| self.vkd.destroyAccelerationStructureKHR(acceleration, null),
+        .micromap => |micromap| self.vkd.destroyMicromapEXT(micromap, null),
         .texture_slot => |slot| self.texture_slots.release(slot),
         .storage_slot => |slot| self.storage_slots.release(slot),
         .storage_volume_slot => |slot| self.storage_volume_slots.release(slot),

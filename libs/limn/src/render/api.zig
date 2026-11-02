@@ -68,6 +68,7 @@ pub const FluidDesc = descs.FluidDesc;
 pub const CloudDesc = descs.CloudDesc;
 pub const CloudFlash = descs.CloudFlash;
 pub const ImageDesc = descs.ImageDesc;
+pub const ModelOptions = descs.ModelOptions;
 pub const EnvironmentDesc = descs.EnvironmentDesc;
 pub const SceneEnvironment = descs.SceneEnvironment;
 pub const MaterialTextures = descs.MaterialTextures;

@@ -57,9 +57,14 @@ pub const Models = struct {
         return @alignCast(@fieldParentPtr("models", models));
     }
 
-    /// Starts loading a glTF model in the background. Entities may reference
-    /// it at once; they appear when it is ready.
+    /// Starts loading a glTF or FBX model in the background. Entities may
+    /// reference it at once; they appear when it is ready.
     pub fn load(models: *Models, path: []const u8) !Model {
+        return models.loadWith(path, .{});
+    }
+
+    /// `load`, for a file that needs `options` to look right.
+    pub fn loadWith(models: *Models, path: []const u8, options: api.ModelOptions) !Model {
         const self = models.renderer();
         self.lock();
         defer self.unlock();
@@ -76,6 +81,9 @@ pub const Models = struct {
                 .raw_mips = self.options.textures.streaming != null,
                 .lods = lodOptions(self),
                 .cache_dir = self.options.cache.assets,
+                .directx_normal_maps = options.directx_normal_maps,
+                .packed_specular = options.packed_specular,
+                .emissive_strength = options.emissive_strength,
             },
         };
         errdefer self.internal.gpa.free(job.path);

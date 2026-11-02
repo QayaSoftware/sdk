@@ -207,6 +207,8 @@ pub fn build(lib: *Sdk.Library) void {
     renderer.addImport("zmesh", zmesh.module("root"));
     renderer.linkLibrary(zmesh.artifact("zmesh"));
     renderer.addImport("zstbi", zstbi.module("root"));
+    const ufbx = b.lazyDependency("ufbx", .{}) orelse return;
+    renderer.addImport("ufbx", ufbxModule(lib, target, asset_optimize, ufbx));
     const simplifier = b.addLibrary(.{
         .name = "renderer_simplifier",
         .root_module = b.createModule(.{ .target = target, .optimize = asset_optimize, .link_libcpp = true }),
@@ -642,6 +644,25 @@ fn addNrd(
     }
 }
 
+/// ufbx, the FBX reader: its header as a Zig module, its source built with
+/// asset code's optimization.
+fn ufbxModule(
+    lib: *Sdk.Library,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    source: *std.Build.Dependency,
+) *std.Build.Module {
+    const b = lib.b;
+    const header = b.addTranslateC(.{
+        .root_source_file = source.path("ufbx.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const module = header.createModule();
+    module.addCSourceFile(.{ .file = source.path("ufbx.c") });
+    module.link_libc = true;
+    return module;
+}
 fn volkModule(
     lib: *Sdk.Library,
     target: std.Build.ResolvedTarget,

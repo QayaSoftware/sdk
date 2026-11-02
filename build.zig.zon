@@ -19,6 +19,11 @@
             .hash = "zstbi-0.11.0-dev-L0Ea_wGXBwCvXIzUWRNZe-6FpofI_nz4uAOQ4O0Fuxko",
             .lazy = true,
         },
+        .ufbx = .{
+            .url = "git+https://github.com/ufbx/ufbx?ref=v0.23.1#26a482ae66871d7de36eb722aa060bce95bce274",
+            .hash = "N-V-__8AAO9TpANsGt_PXc_QfWWLfsjcgvBosIOm6d3wmSzM",
+            .lazy = true,
+        },
         .miniaudio = .{
             .url = "git+https://github.com/mackron/miniaudio?ref=0.11.26#877ea4a7c2601c7b0f2a44e83dfac42e6470fea6",
             .hash = "N-V-__8AAOYywgAhjsrAElPOjbuG-0yZyujq-XyG4tf353h2",

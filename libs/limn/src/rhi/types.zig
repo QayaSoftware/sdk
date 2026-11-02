@@ -11,6 +11,10 @@ pub const PipelineTag = opaque {};
 pub const AccelerationTag = opaque {};
 /// Bottom- or top-level ray-tracing acceleration structure.
 pub const AccelerationStructure = Handle(AccelerationTag);
+pub const MicromapTag = opaque {};
+/// From `Device.createOpacityMicromap`: which parts of alpha-tested triangles
+/// are see-through, for ray traversal to settle without the shader.
+pub const OpacityMicromap = Handle(MicromapTag);
 /// From `Device.createBuffer`; stale once the buffer is destroyed.
 pub const Buffer = Handle(BufferTag);
 /// From `Device.createTexture` or `Frame.backbuffer`. Backbuffer handles
@@ -209,7 +213,7 @@ pub const TextureDesc = struct {
 };
 
 /// Every buffer can also be addressed through `Device.bufferAddress`.
-pub const BufferUsage = packed struct(u8) {
+pub const BufferUsage = packed struct(u16) {
     /// Storage buffer binding; not needed for access by address.
     storage: bool = false,
     index: bool = false,
@@ -224,6 +228,11 @@ pub const BufferUsage = packed struct(u8) {
     acceleration_input: bool = false,
     /// Backing storage of an acceleration structure.
     acceleration_storage: bool = false,
+    /// Read by opacity micromap builds.
+    micromap_input: bool = false,
+    /// Backing storage of an opacity micromap.
+    micromap_storage: bool = false,
+    _: u6 = 0,
 };
 
 pub const BufferMemory = enum {
@@ -545,6 +554,10 @@ pub const AdapterKind = enum {
 pub const Capabilities = struct {
     /// Ray queries and acceleration structures.
     ray_tracing: bool = false,
+    /// `OpacityMicromap`s, which settle alpha-tested ray hits in hardware.
+    opacity_micromaps: bool = false,
+    /// Deepest `OpacityMicromapDesc.subdivision` for four states.
+    max_opacity_subdivision: u32 = 0,
     /// Task and mesh shaders.
     mesh_shaders: bool = false,
     /// Fragment shaders can read `SV_PrimitiveID` (the `geometryShader`
@@ -640,6 +653,57 @@ pub const BlasGeometry = struct {
     /// False sends every ray that meets the geometry through the shader's
     /// candidate test, as alpha tested surfaces need.
     solid: bool = true,
+    /// For a geometry that is not `solid`: which parts of each triangle are
+    /// see-through, so that rays pass or stop there without the shader's
+    /// candidate test; only triangles it leaves unknown reach the shader.
+    /// Its triangle `i` covers the geometry's triangle `i`; it must hold as
+    /// many, and be built (`CommandEncoder.buildOpacityMicromaps`)
+    /// before the structure is. Needs `Capabilities.opacity_micromaps`.
+    opacity: ?OpacityMicromap = null,
+};
+
+/// What a micro-triangle of an opacity micromap says about the surface.
+pub const Opacity = enum(u2) {
+    transparent = 0,
+    @"opaque" = 1,
+    /// Left to the shader's candidate test, which most likely passes.
+    unknown_transparent = 2,
+    /// Left to the shader's candidate test, which most likely stops.
+    unknown_opaque = 3,
+};
+
+/// States per micro-triangle of an opacity micromap.
+pub const OpacityStates = enum {
+    /// Opaque or transparent, one bit each; nothing reaches the shader.
+    two,
+    /// Adds the unknown states, two bits each.
+    four,
+};
+
+/// See `Device.createOpacityMicromap`. Every triangle is split into
+/// 4^`subdivision` micro-triangles, numbered along the space-filling curve
+/// of `VK_EXT_opacity_micromap`.
+pub const OpacityMicromapDesc = struct {
+    triangle_count: u32,
+    /// At most `Capabilities.max_opacity_subdivision`.
+    subdivision: u32,
+    states: OpacityStates = .four,
+    /// `triangleBytes()` per triangle, triangle after triangle; the state of
+    /// micro-triangle `m` at bit `m * bits` (`Opacity` values, low bits
+    /// first). Copied; may be empty when every triangle is in `whole`.
+    data: []const u8,
+    /// Empty, or one entry per triangle: a state for the whole triangle, or
+    /// null to use its micro-triangles in `data`.
+    whole: []const ?Opacity = &.{},
+
+    pub fn bits(self: OpacityMicromapDesc) u32 {
+        return if (self.states == .two) 1 else 2;
+    }
+
+    /// Bytes of `data` per triangle.
+    pub fn triangleBytes(self: OpacityMicromapDesc) usize {
+        return (std.math.shl(usize, 1, 2 * self.subdivision) * self.bits() + 7) / 8;
+    }
 };
 
 pub const BlasDesc = struct {
@@ -658,8 +722,18 @@ pub const BlasBuild = struct {
     desc: BlasDesc,
 };
 
+/// What an acceleration structure's build favors.
+pub const BuildPreference = enum {
+    /// Slower to build, faster to trace: for structures rebuilt only when
+    /// what they hold changes.
+    fast_trace,
+    /// Faster to build, slower to trace: for structures rebuilt most frames.
+    fast_build,
+};
+
 pub const TlasDesc = struct {
     max_instances: u32,
+    build: BuildPreference = .fast_trace,
     /// Built so that `CommandEncoder.updateTlas` can move instances
     /// without a full rebuild, at some cost to tracing.
     updatable: bool = false,
