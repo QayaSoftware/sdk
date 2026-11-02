@@ -56,6 +56,8 @@
           pkgs.libxcursor
           pkgs.libxext
           pkgs.libxi
+          pkgs.libpulseaudio
+          pkgs.alsa-lib
         ] + ":/run/opengl-driver/lib";
       };
   };
