@@ -21,7 +21,7 @@
         },
         .ufbx = .{
             .url = "git+https://github.com/ufbx/ufbx?ref=v0.23.1#26a482ae66871d7de36eb722aa060bce95bce274",
-            .hash = "N-V-__8AAO9TpANsGt_PXc_QfWWLfsjcgvBosIOm6d3wmSzM",
+            .hash = "N-V-__8AAO9TpAO0SjDTvpdsFG_8SwScLs32FI6DReefRpXG",
             .lazy = true,
         },
         .miniaudio = .{
