@@ -3,9 +3,9 @@ const pipelines_module = @import("../renderer/pipelines.zig");
 const gi_passes_push = @import("../shaders/push/gi_passes.zig");
 const scene_pass = @import("../scene_pass.zig");
 const ray_scene = @import("../scene/ray_scene.zig");
-const math = @import("../../math.zig");
+const math = @import("assets").math;
 const render = @import("../renderer.zig");
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const std = @import("std");
 const gpu = @import("../gpu.zig");
 const giScroll = @import("../renderer/view_math.zig").giScroll;
@@ -237,6 +237,7 @@ pub fn ensureGiVolume(renderer: *Renderer, slot: *?GiVolume, scene_origin: [3]f6
         slot.* = null;
     }
     const color = rhi.TextureUsage{ .sampled = true, .color_attachment = true };
+    const updated = rhi.TextureUsage{ .sampled = true, .color_attachment = true, .storage = groupUpdates(device) };
     const tiles_x = counts[0] * counts[2];
     const probe_count = counts[0] * counts[1] * counts[2];
     var made = render.MadeTextures{ .device = device };
@@ -254,21 +255,21 @@ pub fn ensureGiVolume(renderer: *Renderer, slot: *?GiVolume, scene_origin: [3]f6
             .width = tiles_x * gi_irradiance_texels,
             .height = counts[1] * gi_irradiance_texels,
             .format = hdr_format,
-            .usage = color,
+            .usage = updated,
         }),
         .irradiance_fast = try made.texture(.{
             .name = "gi irradiance (fast)",
             .width = tiles_x * gi_irradiance_texels,
             .height = counts[1] * gi_irradiance_texels,
             .format = hdr_format,
-            .usage = color,
+            .usage = updated,
         }),
         .visibility = try made.texture(.{
             .name = "gi visibility",
             .width = tiles_x * gi_visibility_texels,
             .height = counts[1] * gi_visibility_texels,
             .format = .rg16_float,
-            .usage = color,
+            .usage = updated,
         }),
         .offsets = .{
             try made.texture(.{ .name = "gi probe offsets", .width = tiles_x, .height = counts[1], .format = .rgba16_float, .usage = color }),
@@ -353,6 +354,10 @@ pub fn prepareGi(renderer: *Renderer, scene: *SceneData, scene_frame: SceneFrame
     return &scene.gi_cascades[0].?;
 }
 
+/// Frames a new volume traces more probes than usual for: every probe for
+/// the first `warmup_every_frames`, then every second one.
+const warmup_frames = 200;
+const warmup_every_frames = 32;
 /// Frames the scene must stay as it is before probes are updated less often.
 const frames_to_idle = 600;
 
@@ -429,10 +434,11 @@ pub fn updateGi(
     const probe_count = volume.probeCount();
     const moved = volume.shift[0] != 0 or volume.shift[1] != 0 or volume.shift[2] != 0;
     const own = probes(settings.global_illumination);
-    const fresh = volume.frames < 200 or (moved and grid_index + 1 >= scene.gi_cascade_count);
+    const fresh = volume.frames < warmup_frames or (moved and grid_index + 1 >= scene.gi_cascade_count);
+    const every_probe = volume.frames < warmup_every_frames or (moved and grid_index + 1 >= scene.gi_cascade_count);
     const idle = !fresh and own.idle_interval != 0 and scene.gi_lighting_still >= frames_to_idle;
     const usual = std.math.clamp(own.update_interval, 1, 16);
-    const stride: u32 = if (fresh) 1 else if (idle) @max(usual, @min(own.idle_interval, 64)) else usual;
+    const stride: u32 = if (every_probe) 1 else if (fresh) @min(usual, 2) else if (idle) @max(usual, @min(own.idle_interval, 64)) else usual;
     const distances_due = fresh or scene.gi_geometry_still < frames_to_idle or (renderer.internal.frame_index / stride) % idle_visibility_rounds == 0;
     const phase: u32 = @intCast(renderer.internal.frame_index % stride);
 
@@ -494,15 +500,30 @@ pub fn updateGi(
         .axis = math.transformDirection(rotation, .{ 0, 0, 1 }),
     };
     const load: rhi.LoadOp = if (volume.frames == 0) .clear else .load;
+    const grouped = groupUpdates(device) and volume.frames != 0 and !moved;
     cmd.beginScope("gi irradiance");
-    try cmd.beginRendering(.{ .color = &.{
-        .{ .texture = volume.irradiance, .load = load },
-        .{ .texture = volume.irradiance_fast, .load = load },
-    } });
-    cmd.bindPipeline(try renderer.internal.pipelines.of(giIrradiancePipeline));
-    cmd.pushConstants(update_push);
-    cmd.drawFullscreen();
-    cmd.endRendering();
+    if (grouped) {
+        cmd.transition(volume.irradiance, .storage);
+        cmd.transition(volume.irradiance_fast, .storage);
+        cmd.bindPipeline(try renderer.internal.pipelines.of(giIrradianceGroupPipeline));
+        cmd.pushConstants(gi_passes_push.UpdateGroupPush{
+            .update = update_push,
+            .target = try device.storageIndex(volume.irradiance, 0, 0),
+            .fast_target = try device.storageIndex(volume.irradiance_fast, 0, 0),
+        });
+        cmd.dispatch(due_probes, 1, 1);
+        cmd.transition(volume.irradiance_fast, .shader_read);
+        cmd.transition(volume.irradiance, .shader_read);
+    } else {
+        try cmd.beginRendering(.{ .color = &.{
+            .{ .texture = volume.irradiance, .load = load },
+            .{ .texture = volume.irradiance_fast, .load = load },
+        } });
+        cmd.bindPipeline(try renderer.internal.pipelines.of(giIrradiancePipeline));
+        cmd.pushConstants(update_push);
+        cmd.drawFullscreen();
+        cmd.endRendering();
+    }
     const tolerance = std.math.clamp(probes(settings.global_illumination).change_tolerance, 0, 4);
     if (tolerance > 0 and volume.frames != 0) {
         const ClampPush = gi_passes_push.ClampPush;
@@ -522,11 +543,18 @@ pub fn updateGi(
     cmd.endScope();
     if (distances_due) {
         cmd.beginScope("gi visibility");
-        try cmd.beginRendering(.{ .color = &.{.{ .texture = volume.visibility, .load = load }} });
-        cmd.bindPipeline(try renderer.internal.pipelines.of(giVisibilityPipeline));
-        cmd.pushConstants(update_push);
-        cmd.drawFullscreen();
-        cmd.endRendering();
+        if (grouped) {
+            cmd.transition(volume.visibility, .storage);
+            cmd.bindPipeline(try renderer.internal.pipelines.of(giVisibilityGroupPipeline));
+            cmd.pushConstants(gi_passes_push.UpdateGroupPush{ .update = update_push, .target = try device.storageIndex(volume.visibility, 0, 0), .fast_target = 0 });
+            cmd.dispatch(due_probes, 1, 1);
+        } else {
+            try cmd.beginRendering(.{ .color = &.{.{ .texture = volume.visibility, .load = load }} });
+            cmd.bindPipeline(try renderer.internal.pipelines.of(giVisibilityPipeline));
+            cmd.pushConstants(update_push);
+            cmd.drawFullscreen();
+            cmd.endRendering();
+        }
         cmd.transition(volume.visibility, .shader_read);
         cmd.endScope();
     }
@@ -619,4 +647,18 @@ fn giVisibilityPipeline(_: *rhi.Device) pipelines_module.Desc {
 /// far-off scene origin or volume cannot overflow it.
 fn gridIndex(cell: f64) i32 {
     return @intFromFloat(std.math.clamp(cell, -(1 << 30), 1 << 30));
+}
+
+fn giIrradianceGroupPipeline(_: *rhi.Device) pipelines_module.Desc {
+    return .{ .compute = .{ .name = "gi irradiance (groups)", .shader = pipelines_module.shaderCode("gi_irradiance_group.comp.spv") } };
+}
+
+fn giVisibilityGroupPipeline(_: *rhi.Device) pipelines_module.Desc {
+    return .{ .compute = .{ .name = "gi visibility (groups)", .shader = pipelines_module.shaderCode("gi_visibility_group.comp.spv") } };
+}
+
+/// Whether probes are updated by `updateGroupMain`, one group per probe due,
+/// which writes the irradiance and visibility atlases as storage images.
+fn groupUpdates(device: *rhi.Device) bool {
+    return device.caps.storage_images and device.caps.formats.get(render.hdr_format).storage and device.caps.formats.get(.rg16_float).storage;
 }

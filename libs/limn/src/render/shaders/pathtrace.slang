@@ -173,7 +173,7 @@ Surface pathSurface(FrameConstants frame, TraceHit hit, float3 origin, float3 di
 }
 
 bool pathAny(float3 origin, float3 direction, float reach) {
-    return tracer.any(origin, direction, reach, RAY_EVERYTHING, Cutouts.whole);
+    return tracer.any(origin, direction, reach, RAY_EVERYTHING, Cutouts.cut);
 }
 
 static const float mirror_roughness = 0.08;

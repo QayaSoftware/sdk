@@ -1,7 +1,7 @@
 //! Render targets that outlive a pass: pictures kept from frame to frame with
 //! their history, and a pool of short-lived ones shared by descriptor.
 const std = @import("std");
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 
 /// Frames a target may go unused before it is destroyed.
 const idle_frames = 8;

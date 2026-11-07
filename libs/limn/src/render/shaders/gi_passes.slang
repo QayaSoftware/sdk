@@ -264,3 +264,79 @@ Output updateMain(float4 fragment : SV_Position) {
 #endif
     return result;
 }
+
+#ifdef STORAGE_IMAGES
+#include "gi_passes.UpdateGroupPush.slang"
+
+[[vk::push_constant]] UpdateGroupPush group_push;
+
+static const uint most_rays = 256u;
+groupshared float4 group_rays[most_rays];
+groupshared float4 group_directions[most_rays];
+
+/// As `updateMain` for a frame where no probe starts over: one group per
+/// probe due, which reads the probe's rays once into shared memory, and one
+/// thread per texel of its tile, blended into the targets by hand.
+[shader("compute")]
+#ifdef VISIBILITY
+[numthreads(16, 16, 1)]
+#else
+[numthreads(8, 8, 1)]
+#endif
+void updateGroupMain(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID, uint flat : SV_GroupIndex) {
+    FrameConstants frame = group_push.update.frame;
+    uint probe = group.x * group_push.update.probe_stride + group_push.update.probe_phase;
+    GiGrid probe_grid = giGrid(frame, group_push.update.grid_index);
+    int3 counts = probe_grid.counts;
+    uint probe_count = uint(counts.x * counts.y * counts.z);
+    if (probe >= probe_count) return;
+    int3 coord = giProbeCoord(int(probe), counts);
+    if (!giProbeDue(frame, giProbePosition(probe_grid, giGridCoord(probe_grid, coord)), probe, group_push.update.turn, group_push.update.far_distance)) return;
+    uint first = probe * group_push.update.rays_per_probe;
+    for (uint i = flat; i < group_push.update.rays_per_probe; i += uint(texels * texels)) {
+        group_rays[i] = loadAligned<16>(group_push.update.rays + first + i);
+        group_directions[i] = loadAligned<16>(group_push.update.directions + i);
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    int2 local = int2(thread.xy);
+    int2 interior = interiorTexel(local);
+    float3 direction = decodeNormal((float2(interior) - 0.5) / float(texels - 2));
+    float3 total = float3(0.0);
+    float weight_total = 0.0;
+    uint from = 0u;
+    uint to = group_push.update.rays_per_probe;
+#ifdef VISIBILITY
+    float along = dot(direction, group_push.update.axis);
+    float half_count = 0.5 * float(group_push.update.rays_per_probe);
+    from = uint(clamp(floor((1.0 - along - reach_along) * half_count), 0.0, float(group_push.update.rays_per_probe)));
+    to = uint(clamp(ceil((1.0 - along + reach_along) * half_count), 0.0, float(group_push.update.rays_per_probe)));
+#endif
+    for (uint i = from; i < to; i++) {
+        float weight = dot(direction, group_directions[i].xyz);
+        if (weight <= least_cosine) continue;
+        float4 ray = group_rays[i];
+#ifdef VISIBILITY
+        float squared = weight * weight;
+        float sixteenth = squared * squared;
+        sixteenth *= sixteenth;
+        sixteenth *= sixteenth;
+        weight = sixteenth * sixteenth * sixteenth * squared;
+        float distance = min(abs(ray.a), group_push.update.max_distance);
+        total.rg += float2(distance, distance * distance) * weight;
+#else
+        total += ray.rgb * weight;
+#endif
+        weight_total += weight;
+    }
+    float3 gathered = total / max(weight_total, 1e-5);
+    int2 tile = int2(int(coord.x + coord.z * counts.x), coord.y);
+    int2 pixel = tile * texels + local;
+    float4 old = storage_2d[group_push.target][pixel];
+    storage_2d[group_push.target][pixel] = float4(lerp(old.rgb, gathered, 1.0 - group_push.update.hysteresis), 1.0);
+#ifndef VISIBILITY
+    float4 old_fast = storage_2d[group_push.fast_target][pixel];
+    storage_2d[group_push.fast_target][pixel] = float4(lerp(old_fast.rgb, gathered, 1.0 - group_push.update.fast_hysteresis), 1.0);
+#endif
+}
+#endif

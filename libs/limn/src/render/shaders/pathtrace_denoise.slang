@@ -129,12 +129,17 @@ bool mirroredAt(int2 pixel) {
     return fetchTexel(denoise_push.facing_texture, pixel).a < 0.0;
 }
 
-float3 positionAt(FrameConstants frame, int2 pixel, out float reach) {
-    reach = abs(fetchTexel(denoise_push.facing_texture, pixel).a);
+/// Where the surface seen at `pixel` is, `reach` along its ray.
+float3 positionFrom(FrameConstants frame, int2 pixel, float reach) {
     float2 uv = (float2(pixel) + 0.5) * frame.inv_resolution;
     float3 through = worldPositionFromDepth(uv, 0.5, frame.inv_view_proj);
     float3 eye = eyePoint(frame, through);
     return eye + normalize(through - eye) * reach;
+}
+
+float3 positionAt(FrameConstants frame, int2 pixel, out float reach) {
+    reach = abs(fetchTexel(denoise_push.facing_texture, pixel).a);
+    return positionFrom(frame, pixel, reach);
 }
 
 float3 facingAt(int2 pixel) {
@@ -248,15 +253,17 @@ float4 denoiseMain(float4 fragment : SV_Position) : SV_Target {
             int2 tap = pixel + int2(x, y) * denoise_push.step_size;
             if (any(tap < int2(0)) || any(tap > last_pixel)) continue;
             float4 tap_guide = fetchTexel(denoise_push.guide_texture, tap);
-            if (dot(tap_guide.rgb, float3(1.0)) <= 0.0 || mirroredAt(tap) != mirrored) continue;
-            float tap_reach;
-            float3 tap_position = positionAt(frame, tap, tap_reach);
+            float4 tap_facing = fetchTexel(denoise_push.facing_texture, tap);
+            if (dot(tap_guide.rgb, float3(1.0)) <= 0.0 || (tap_facing.a < 0.0) != mirrored) continue;
+            float tap_reach = abs(tap_facing.a);
+            float3 tap_position = positionFrom(frame, tap, tap_reach);
             if (tap_reach <= 0.0) continue;
             float3 light = all(tap == pixel) ? own : lightAt(tap);
             float off_plane = abs(dot(normal, tap_position - position));
             float weight = kernel[abs(x)] * kernel[abs(y)];
             weight *= exp(-off_plane / (0.01 * reach + 1e-4));
-            weight *= facingWeight(facing, facingAt(tap));
+            float tap_size = length(tap_facing.rgb);
+            weight *= facingWeight(facing, tap_size > 1e-4 ? tap_facing.rgb / tap_size : float3(0.0, 1.0, 0.0));
             weight *= exp(-abs(luminance(light) - reference) / allowed);
             if (mirrored) weight *= exp(-abs(tap_reach - reach) / (0.05 * reach + 0.02));
             total += light * weight;

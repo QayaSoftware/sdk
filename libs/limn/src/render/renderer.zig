@@ -2,12 +2,12 @@
 //! environment, drawn through a GPU-driven visibility-buffer pipeline.
 //! Frame outline: see `renderScene` in `renderer/view_render.zig`.
 const std = @import("std");
-const rhi = @import("../rhi/rhi.zig");
-const math = @import("../math.zig");
-const gltf = @import("../asset/gltf.zig");
+const rhi = @import("lrhi");
+const math = @import("assets").math;
+const gltf = @import("assets").gltf;
 const gpu = @import("gpu.zig");
 const animation = @import("animation.zig");
-const font_module = @import("font_baker").font;
+const font_module = @import("assets").font;
 const models_module = @import("renderer/models.zig");
 const streaming_module = @import("renderer/streaming.zig");
 const materials_module = @import("renderer/materials.zig");
@@ -141,6 +141,7 @@ const PickPending = renderer_state.PickPending;
 const bakeLoadedClouds = environments_module.bakeLoadedClouds;
 const bakeSky = environments_module.bakeSky;
 const buildPendingBlas = ray_scene.buildPendingBlas;
+const scene_layout = @import("renderer/scene_layout.zig");
 const captureProbes = probes_module.captureProbes;
 const compactGeometry = scene_update_module.compactGeometry;
 const finalizeEnvironment = environments_module.finalizeEnvironment;
@@ -287,7 +288,7 @@ pub const Internal = struct {
     /// The upscaler of the view this frame generates frames from, and whether
     /// its history was reset.
     /// What DLSS offers on this device.
-    dlss: @import("dlss.zig").Library = .{},
+    dlss: @import("lrhi-dlss").Library = .{},
     generating: ?@import("techniques/upscaling.zig").Generator = null,
     generating_reset: bool = false,
     generating_failed: bool = false,
@@ -379,7 +380,7 @@ pub const Renderer = struct {
             .mesh_shaders = options.geometry.mesh_shaders,
             .primitive_id = options.geometry.primitive_id,
             .block_formats = options.textures.block_formats,
-            .nvidia_ngx = @import("dlss.zig").available,
+            .nvidia_ngx = @import("lrhi-dlss").available,
         });
         errdefer device.deinit();
         gltf.acquireLibraries(io);
@@ -412,7 +413,7 @@ pub const Renderer = struct {
             .internal = .{
                 .gpa = gpa,
                 .io = io,
-                .dlss = @import("dlss.zig").Library.start(device),
+                .dlss = @import("lrhi-dlss").Library.start(device),
                 .pipelines = .init(gpa, device, io),
                 .sampler_linear_clamp = try device.createSampler(.{ .address_u = .clamp_to_edge, .address_v = .clamp_to_edge, .address_w = .clamp_to_edge }),
                 .sampler_nearest_clamp = try device.createSampler(.{
@@ -454,7 +455,7 @@ pub const Renderer = struct {
 
         self.fonts.internal.default_font = try gpa.create(Font);
         errdefer gpa.destroy(self.fonts.internal.default_font);
-        self.fonts.internal.default_font.* = try font_module.load(gpa, @embedFile("fonts/DejaVuSans.ttf"), font_module.default_ranges);
+        self.fonts.internal.default_font.* = try font_module.load(gpa, @import("assets").default_font, font_module.default_ranges);
         errdefer self.fonts.internal.default_font.deinit();
         try registerFont(self, self.fonts.internal.default_font);
         if (options.cache.assets_max_bytes != 0) if (options.cache.assets) |directory| {
@@ -594,9 +595,9 @@ pub const Renderer = struct {
             .path_tracing = view_render_module.pathTracingSupport(self),
             .mesh_shaders = offered(self.options.geometry.mesh_shaders, device.caps.mesh_shaders),
             .variable_rate_shading = if (device.caps.shading_rate_tile != 0) .available else .no_device_support,
-            .fidelityfx = built(@import("ffx.zig").available, device.caps.storage_images),
-            .dlss = built(@import("dlss.zig").available, device.caps.storage_images and self.internal.dlss.super_resolution),
-            .dlss_ray_reconstruction = built(@import("dlss.zig").available, device.caps.storage_images and self.internal.dlss.ray_reconstruction),
+            .fidelityfx = built(@import("lrhi-fsr").available, device.caps.storage_images),
+            .dlss = built(@import("lrhi-dlss").available, device.caps.storage_images and self.internal.dlss.super_resolution),
+            .dlss_ray_reconstruction = built(@import("lrhi-dlss").available, device.caps.storage_images and self.internal.dlss.ray_reconstruction),
             .hdr_output = offered(self.options.hdr_output, device.hdr_active),
         };
     }
@@ -675,7 +676,7 @@ pub const Renderer = struct {
             };
             if (finished) {
                 self.internal.loading_count -= 1;
-                self.internal.asset_generation += 1;
+                scene_layout.relayModel(self, .{ .index = @intCast(slot_index), .generation = self.models.internal.table.slotAt(slot_index).generation });
             }
             if (budget == 0) break;
         };
@@ -779,21 +780,21 @@ pub const Renderer = struct {
         if (!std.math.isFinite(desc.delta_time) or desc.delta_time < 0) return error.InvalidDeltaTime;
         var failure: ?anyerror = null;
         if (self.options.deterministic) try self.waitUntilLoaded();
-        try device.internal.waitForFrame();
+        try device.waitForFrame();
         {
             self.lock();
             defer self.unlock();
-            if (!try device.internal.prepareSurface()) return false;
+            if (!try device.prepareSurface()) return false;
         }
-        if (!try device.internal.acquireImage()) return false;
+        if (!try device.acquireImage()) return false;
         {
             self.lock();
             defer self.unlock();
             const cpu_start = std.Io.Clock.Timestamp.now(self.internal.io, .awake);
-            const frame = try device.internal.startFrame();
+            const frame = try device.startFrame();
             self.renderFrame(frame, desc) catch |err| {
                 failure = err;
-                device.internal.closeFailedFrame();
+                device.closeFailedFrame();
                 for (self.internal.frame_targets[0..self.internal.frame_target_count]) |target| {
                     const is_backbuffer = if (frame.backbuffer) |backbuffer| std.meta.eql(backbuffer, target) else false;
                     if (!is_backbuffer) frame.cmd.transition(target, .shader_read);
@@ -806,7 +807,7 @@ pub const Renderer = struct {
             };
             device.setFrameGenerator(if (self.internal.generating != null and failure == null) .{ .context = self, .generate = generateFrame } else null);
             const arena_used = self.internal.arenas[@intCast(frame.index % rhi.frames_in_flight)].used;
-            try device.internal.submitFrame();
+            try device.submitFrame();
             self.internal.stats.indirect_draws = frame.cmd.work.indirect_draws;
             self.internal.stats.commands = frame.cmd.work;
             self.internal.stats.frame_data_bytes = arena_used;
@@ -814,7 +815,7 @@ pub const Renderer = struct {
             self.internal.frame_index += 1;
             self.internal.time += desc.delta_time;
         }
-        try device.internal.presentFrame();
+        try device.presentFrame();
         if (failure) |err| return err;
         return true;
     }

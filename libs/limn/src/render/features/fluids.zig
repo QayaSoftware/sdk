@@ -1,5 +1,5 @@
 //! Smoke and fire of a scene's fluids.
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const pipelines_module = @import("../renderer/pipelines.zig");
 const fluid_passes_push = @import("../shaders/push/fluid_passes.zig");
 const fog_push = @import("../shaders/push/fog.zig");

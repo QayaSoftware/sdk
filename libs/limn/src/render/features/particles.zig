@@ -2,9 +2,9 @@
 const pipelines_module = @import("../renderer/pipelines.zig");
 const particles_push = @import("../shaders/push/particles.zig");
 const render = @import("../renderer.zig");
-const math = @import("../../math.zig");
+const math = @import("assets").math;
 const gpu = @import("../gpu.zig");
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const std = @import("std");
 const features = @import("../core/features.zig");
 

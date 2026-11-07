@@ -8,10 +8,10 @@ const geometry_feature = @import("geometry.zig");
 const hair_feature = @import("hair.zig");
 const hooks = @import("hooks.zig");
 const gpu = @import("../gpu.zig");
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const filled = @import("../api.zig").filled;
 const std = @import("std");
-const math = @import("../../math.zig");
+const math = @import("assets").math;
 const api = @import("../api.zig");
 const features = @import("../core/features.zig");
 
@@ -72,7 +72,7 @@ pub const Settings = struct {
     /// (directional, rectangle, lights past the tile budget). Needs ray tracing.
     traced_lights: bool = true,
     /// Rays per pixel toward each ray-shadowed light that has a size, 1..15.
-    light_rays: u32 = 4,
+    light_rays: u32 = 1,
     /// Accumulate soft light shadows over frames; moving shadows trail by a few
     /// frames. Needs `Settings.resolution.temporal_antialiasing`.
     light_filter: bool = true,
@@ -81,9 +81,9 @@ pub const Settings = struct {
 pub fn preset(quality: api.Quality) ?Settings {
     return switch (quality) {
         .ultra => .{},
-        .high => .{ .light_rays = 2 },
-        .medium => .{ .samples = 8, .light_rays = 2 },
-        .low => .{ .cascades = 3, .samples = 4, .light_rays = 1 },
+        .high => .{},
+        .medium => .{ .samples = 8 },
+        .low => .{ .cascades = 3, .samples = 4 },
     };
 }
 

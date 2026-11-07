@@ -1,13 +1,14 @@
 //! How a scene's entities lay out in its instance, reference and ray-tracing slots, and the changes made to them in place. Internal to the renderer.
 const std = @import("std");
-const rhi = @import("../../rhi/rhi.zig");
-const math = @import("../../math.zig");
+const rhi = @import("lrhi");
+const math = @import("assets").math;
 const gpu = @import("../gpu.zig");
 const api = @import("../api.zig");
 const renderer_state = @import("../state.zig");
 const render = @import("../renderer.zig");
 
 const Renderer = render.Renderer;
+const Model = api.Model;
 const noteEdited = @import("entity_edits.zig").noteEdited;
 const Mat4 = math.Mat4;
 const Entity = api.Entity;
@@ -136,6 +137,7 @@ pub fn rebuildLayout(self: *Renderer, scene: *SceneData) !void {
     }
     scene.static_version += 1;
     const count: u32 = @intCast(self.internal.scratch_refs.items.len);
+    if (count > max_meshlet_refs) return error.TooManyMeshlets;
     if (count > scene.refs_capacity) {
         if (scene.refs) |buffer| self.device.destroyBuffer(buffer);
         scene.refs_capacity = @max(count + count / 2, 4096);
@@ -151,6 +153,10 @@ pub fn rebuildLayout(self: *Renderer, scene: *SceneData) !void {
     scene.layout_version += 1;
     scene.layout_generation = self.internal.asset_generation;
 }
+
+/// Meshlet references a scene can hold: visibility ids keep a reference in
+/// their top 25 bits and a triangle in the low 7 (visibility.slang).
+const max_meshlet_refs = 1 << 25;
 
 /// Room kept for `needed` slots: what is kept already while it is enough and
 /// not four times too much, else half as much again.
@@ -243,7 +249,7 @@ fn layEntity(self: *Renderer, scene: *SceneData, handle: Entity, entity: *const 
         const emissive_image = bounds_of.material < model.material_images.len and model.material_images[bounds_of.material].emissive != null;
         const glows = material.emissive_texture == null and !emissive_image and (material.emissive[0] > 0 or material.emissive[1] > 0 or material.emissive[2] > 0) and mesh.lod0_index_count >= 3 and !mesh.coarse;
         if (glows and scene.glowing.items.len < max_glowing) {
-            try scene.glowing.append(gpa, .{ .instance = instance_index, .triangles = mesh.lod0_index_count / 3 });
+            try scene.glowing.append(gpa, .{ .instance = instance_index, .triangles = mesh.lod0_index_count / 3, .power = 0.2126 * material.emissive[0] + 0.7152 * material.emissive[1] + 0.0722 * material.emissive[2] });
             if (!skinned) info.bits |= EntryInfo.glows;
         }
         scene.entries.items[instance_index] = info;
@@ -363,11 +369,11 @@ pub fn applyStructure(self: *Renderer, scene: *SceneData) !bool {
                 try device.uploadBuffer(scene.refs.?, @as(u64, span.ref_first) * @sizeOf(gpu.MeshletRef), std.mem.sliceAsBytes(self.internal.scratch_refs.items));
             }
             if (span.tlas_count != 0 and tlas_live and span.tlas_first + span.tlas_count <= scene.tlas_instances_capacity) {
-                const zeros: [16]rhi.AccelerationInstance = @splat(std.mem.zeroes(rhi.AccelerationInstance));
+                const zeros: [16]rhi.PackedInstance = @splat(std.mem.zeroes(rhi.PackedInstance));
                 var done: u32 = 0;
                 while (done < span.tlas_count) {
                     const count = @min(span.tlas_count - done, zeros.len);
-                    try device.uploadBuffer(scene.tlas_instances.?, @as(u64, span.tlas_first + done) * @sizeOf(rhi.AccelerationInstance), std.mem.sliceAsBytes(zeros[0..count]));
+                    try device.uploadBuffer(scene.tlas_instances.?, @as(u64, span.tlas_first + done) * @sizeOf(rhi.PackedInstance), std.mem.sliceAsBytes(zeros[0..count]));
                     done += count;
                 }
             }
@@ -423,6 +429,7 @@ pub fn applyStructure(self: *Renderer, scene: *SceneData) !bool {
         var span = entityShape(entity, model);
         span.layout_first = scene.instance_ranges.alloc(span.layout_count) orelse return false;
         span.ref_first = scene.ref_ranges.alloc(span.ref_count) orelse return false;
+        if (span.ref_first + span.ref_count > max_meshlet_refs) return error.TooManyMeshlets;
         span.tlas_first = scene.tlas_ranges.alloc(span.tlas_count) orelse return false;
         try growLayout(self, scene, span.layout_first + span.layout_count);
         self.internal.scratch_refs.clearRetainingCapacity();
@@ -438,10 +445,11 @@ pub fn applyStructure(self: *Renderer, scene: *SceneData) !bool {
             const sphere = worldSphere(info, transform);
             scene.spheres.items[index] = sphere;
             noteMover(self, scene, sphere);
-            if (info.tlas_slot == gpu.invalid_id or !tlas_live or info.tlas_slot >= scene.tlas_instances_capacity) continue;
+            if (info.tlas_slot == gpu.invalid_id) continue;
+            if (!tlas_live or info.tlas_slot >= scene.tlas_instances_capacity) return false;
             const mesh = model.meshes[instance.mesh];
-            const placed = [1]rhi.AccelerationInstance{tlasInstance(device, mesh.blas.?, index, mesh.blend, transform)};
-            try device.uploadBuffer(scene.tlas_instances.?, @as(u64, info.tlas_slot) * @sizeOf(rhi.AccelerationInstance), std.mem.sliceAsBytes(&placed));
+            const placed = [1]rhi.PackedInstance{tlasInstance(device, mesh.blas.?, index, mesh.blend, transform)};
+            try device.uploadBuffer(scene.tlas_instances.?, @as(u64, info.tlas_slot) * @sizeOf(rhi.PackedInstance), std.mem.sliceAsBytes(&placed));
         }
         staleChunks(scene, span.layout_first, span.layout_count);
         owned.* = span;
@@ -477,16 +485,40 @@ pub fn rigidRecord(self: *Renderer, entity: *const EntityData, model: *const Mod
     };
 }
 
-pub fn tlasInstance(device: *rhi.Device, blas: rhi.AccelerationStructure, instance_index: usize, blend: bool, t: Mat4) rhi.AccelerationInstance {
-    return .{
+pub fn tlasInstance(device: *rhi.Device, blas: rhi.AccelerationStructure, instance_index: usize, blend: bool, t: Mat4) rhi.PackedInstance {
+    return device.packInstance(.{
         .transform = .{ t[0], t[4], t[8], t[12], t[1], t[5], t[9], t[13], t[2], t[6], t[10], t[14] },
-        .custom_index_and_mask = (@as(u32, @intCast(instance_index)) & 0x00ff_ffff) | (if (blend) @as(u32, 0x0200_0000) else 0xff00_0000),
-        .offset_and_flags = 0x0100_0000,
-        .blas = device.accelerationAddress(blas),
-    };
+        .custom_index = @truncate(instance_index),
+        .mask = if (blend) 0x02 else 0xff,
+        .flags = .{ .no_culling = true },
+        .blas = blas,
+    });
 }
 
 pub fn worldSphere(info: EntryInfo, transform: Mat4) [4]f32 {
     const center = math.transformPoint(transform, info.center);
     return .{ center[0], center[1], center[2], info.radius * math.maxScale(transform) };
+}
+
+/// Lays out again, at the next prepared frame, every visible entity that
+/// draws `model`, after its meshes or their ray tracing structures changed.
+/// Scenes with an instance group of it are laid out whole.
+pub fn relayModel(self: *Renderer, model: Model) void {
+    const gpa = self.internal.gpa;
+    for (0..self.scenes.internal.table.slotCount()) |slot| if (self.scenes.internal.table.slotAt(slot).value) |*scene| {
+        for (scene.groups.items) |group| {
+            const data = self.instances.internal.table.get(group) orelse continue;
+            if (std.meta.eql(data.model, model)) scene.layout_dirty = true;
+        }
+        if (scene.layout_dirty) continue;
+        for (scene.entities.items) |entity| {
+            const data = self.entities.internal.table.get(entity) orelse continue;
+            if (!data.visible or !std.meta.eql(data.model, model)) continue;
+            forgetEntity(self, scene, self.internal.entity_spans.items[entity.index]);
+            self.internal.entity_spans.items[entity.index] = .{};
+            scene.added.append(gpa, entity) catch {
+                scene.layout_dirty = true;
+            };
+        }
+    };
 }

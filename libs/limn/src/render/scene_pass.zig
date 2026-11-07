@@ -3,8 +3,8 @@
 const cull_push = @import("shaders/push/cull.zig");
 const visibility_push = @import("shaders/push/visibility.zig");
 const std = @import("std");
-const rhi = @import("../rhi/rhi.zig");
-const math = @import("../math.zig");
+const rhi = @import("lrhi");
+const math = @import("assets").math;
 const gpu = @import("gpu.zig");
 const render = @import("renderer.zig");
 

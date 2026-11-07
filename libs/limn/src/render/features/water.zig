@@ -1,11 +1,11 @@
 //! A scene's bodies of water.
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const pipelines_module = @import("../renderer/pipelines.zig");
 const water_passes_push = @import("../shaders/push/water_passes.zig");
 const render = @import("../renderer.zig");
 const scene_pass = @import("../scene_pass.zig");
 const gpu = @import("../gpu.zig");
-const math = @import("../../math.zig");
+const math = @import("assets").math;
 const transparency_feature = @import("transparency.zig");
 const features = @import("../core/features.zig");
 

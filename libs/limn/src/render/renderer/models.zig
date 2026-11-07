@@ -2,9 +2,9 @@
 const std = @import("std");
 const geometry_feature = @import("../features/geometry.zig");
 const handle = @import("handles");
-const rhi = @import("../../rhi/rhi.zig");
-const math = @import("../../math.zig");
-const gltf = @import("../../asset/gltf.zig");
+const rhi = @import("lrhi");
+const math = @import("assets").math;
+const gltf = @import("assets").gltf;
 const gpu = @import("../gpu.zig");
 const animation = @import("../animation.zig");
 const bvh = @import("../bvh.zig");
@@ -19,7 +19,7 @@ const Model = api.Model;
 const MeshDesc = api.MeshDesc;
 const MaterialTextures = api.MaterialTextures;
 const primitives = @import("../primitives.zig");
-const blockFormat = renderer_state.blockFormat;
+const blockFormat = @import("lrhi-assets").blockFormat;
 const TextureStream = renderer_state.TextureStream;
 const AssetState = api.AssetState;
 const AnimationInfo = api.AnimationInfo;
@@ -76,7 +76,7 @@ pub const Models = struct {
             .path = try self.internal.gpa.dupe(u8, path),
             .options = .{
                 .compress_textures = self.options.textures.compression == .bc7 and self.device.caps.bc_textures,
-                .basis = renderer_state.basisTarget(self.device.caps),
+                .basis = @import("lrhi-assets").basisTarget(self.device.caps),
                 .normal_maps_bc5 = self.options.textures.normal_maps_bc5,
                 .raw_mips = self.options.textures.streaming != null,
                 .lods = lodOptions(self),
@@ -334,7 +334,7 @@ pub fn finalizeModel(self: *Renderer, entry: *ModelEntry, budget: *u64) !bool {
                     } else self.internal.gpa.free(path);
                 };
                 entry.streamed += 1;
-                entry.textures[entry.next_image] = try createStreamTexture(self, stream, floor);
+                entry.textures[entry.next_image] = try createStreamTexture(self, stream, floor, null);
                 budget.* -|= stream.bytesFrom(floor);
                 continue;
             }
@@ -370,48 +370,50 @@ pub fn finalizeModel(self: *Renderer, entry: *ModelEntry, budget: *u64) !bool {
         budget.* -|= pixels.len;
     }
 
-    entry.material_base = try self.materials.internal.pool.alloc(self, @intCast(source.materials.len));
-    const lobed = for (source.materials) |material| {
-        if (material.clearcoat > 0 or material.anisotropy != 0 or material.iridescence > 0 or material.sheen_color[0] > 0 or material.sheen_color[1] > 0 or material.sheen_color[2] > 0) break true;
-    } else false;
-    if (lobed and !entry.lobed) self.internal.lobe_users += 1;
-    entry.lobed = entry.lobed or lobed;
-    var transform_count: u32 = 0;
-    for (source.materials) |material| {
-        if (material.hasOwnTransforms()) transform_count += 1;
-    }
-    if (transform_count != 0) {
-        entry.transform_base = try self.materials.internal.pool.alloc(self, transform_count * gpu.texture_transform_slots);
-        entry.transform_count = transform_count;
-        self.internal.texture_transform_users += 1;
-        var slot = entry.transform_base;
+    if (entry.next_mesh == null) {
+        entry.material_base = try self.materials.internal.pool.alloc(self, @intCast(source.materials.len));
+        const lobed = for (source.materials) |material| {
+            if (material.clearcoat > 0 or material.anisotropy != 0 or material.iridescence > 0 or material.sheen_color[0] > 0 or material.sheen_color[1] > 0 or material.sheen_color[2] > 0) break true;
+        } else false;
+        if (lobed and !entry.lobed) self.internal.lobe_users += 1;
+        entry.lobed = entry.lobed or lobed;
+        var transform_count: u32 = 0;
         for (source.materials) |material| {
-            if (!material.hasOwnTransforms()) continue;
-            var block: [gpu.material_texture_count]gpu.TextureTransform = undefined;
-            for (material.textureRefs(), &block) |maybe, *out| {
-                const transform = if (maybe) |ref| ref.transform else material.sharedTransform();
-                out.* = .{ .matrix = uvMatrix(transform.scale, transform.rotation), .offset = transform.offset };
-            }
-            try self.materials.internal.pool.write(device, slot, std.mem.sliceAsBytes(&block));
-            slot += gpu.texture_transform_slots;
+            if (material.hasOwnTransforms()) transform_count += 1;
         }
-    }
-    const materials = try gpa.alloc(gpu.Material, source.materials.len);
-    defer gpa.free(materials);
-    for (source.materials, materials, 0..) |material, *out, index| {
-        out.* = try encodeMaterial(self, entry, material, index);
-        self.materials.internal.shader_users[out.shader] += 1;
-    }
-    try self.materials.internal.pool.write(device, entry.material_base, std.mem.sliceAsBytes(materials));
+        if (transform_count != 0) {
+            entry.transform_base = try self.materials.internal.pool.alloc(self, transform_count * gpu.texture_transform_slots);
+            entry.transform_count = transform_count;
+            self.internal.texture_transform_users += 1;
+            var slot = entry.transform_base;
+            for (source.materials) |material| {
+                if (!material.hasOwnTransforms()) continue;
+                var block: [gpu.material_texture_count]gpu.TextureTransform = undefined;
+                for (material.textureRefs(), &block) |maybe, *out| {
+                    const transform = if (maybe) |ref| ref.transform else material.sharedTransform();
+                    out.* = .{ .matrix = uvMatrix(transform.scale, transform.rotation), .offset = transform.offset };
+                }
+                try self.materials.internal.pool.write(device, slot, std.mem.sliceAsBytes(&block));
+                slot += gpu.texture_transform_slots;
+            }
+        }
+        const materials = try gpa.alloc(gpu.Material, source.materials.len);
+        defer gpa.free(materials);
+        for (source.materials, materials, 0..) |material, *out, index| {
+            out.* = try encodeMaterial(self, entry, material, index);
+            self.materials.internal.shader_users[out.shader] += 1;
+        }
+        try self.materials.internal.pool.write(device, entry.material_base, std.mem.sliceAsBytes(materials));
 
-    entry.mesh_base = try self.internal.meshes.alloc(self, @intCast(source.meshes.len));
-    entry.meshes = try gpa.alloc(ModelMesh, source.meshes.len);
-    @memset(entry.meshes, std.mem.zeroes(ModelMesh));
-    const mesh_records = try gpa.alloc(gpu.Mesh, source.meshes.len);
-    defer gpa.free(mesh_records);
-    var triangle_count: u32 = 0;
-    var meshlet_count: u32 = 0;
-    for (source.meshes, entry.meshes, mesh_records) |mesh, *out, *record| {
+        entry.mesh_base = try self.internal.meshes.alloc(self, @intCast(source.meshes.len));
+        entry.meshes = try gpa.alloc(ModelMesh, source.meshes.len);
+        @memset(entry.meshes, std.mem.zeroes(ModelMesh));
+        entry.next_mesh = 0;
+    }
+    while (entry.next_mesh.? < source.meshes.len) : (entry.next_mesh.? += 1) {
+        if (budget.* == 0) return false;
+        const mesh = source.meshes[entry.next_mesh.?];
+        const out = &entry.meshes[entry.next_mesh.?];
         out.* = .{
             .vertex_offset = try self.internal.vertices.alloc(self, @intCast(mesh.vertices.len)),
             .vertex_count = @intCast(mesh.vertices.len),
@@ -432,6 +434,9 @@ pub fn finalizeModel(self: *Renderer, entry: *ModelEntry, budget: *u64) !bool {
         try self.internal.vertices.write(device, out.vertex_offset, std.mem.sliceAsBytes(mesh.vertices));
         try self.internal.indices.write(device, out.index_offset, std.mem.sliceAsBytes(mesh.indices));
         try self.internal.meshlets.write(device, out.meshlet_offset, std.mem.sliceAsBytes(mesh.meshlets));
+        if (device.caps.ray_tracing and mesh.skin == null) if (mesh.opacity) |map| {
+            out.opacity = try @import("lrhi-assets").createOpacityMicromap(gpa, device, map);
+        };
         if (self.options.ray_tracing.software_path_tracing and !device.caps.ray_tracing and mesh.skin == null) try buildMeshTree(self, mesh, out, entry.mesh_base + @as(u32, @intCast((@intFromPtr(out) - @intFromPtr(entry.meshes.ptr)) / @sizeOf(ModelMesh))));
         if (mesh.skin) |skin| {
             out.skin_offset = try self.internal.skin_vertices.alloc(self, @intCast(skin.len));
@@ -442,6 +447,13 @@ pub fn finalizeModel(self: *Renderer, entry: *ModelEntry, budget: *u64) !bool {
                 try self.internal.morph_deltas.write(device, out.morph_offset.?, std.mem.sliceAsBytes(mesh.morph_deltas));
             }
         }
+        budget.* -|= std.mem.sliceAsBytes(mesh.vertices).len + std.mem.sliceAsBytes(mesh.indices).len + std.mem.sliceAsBytes(mesh.meshlets).len;
+    }
+    const mesh_records = try gpa.alloc(gpu.Mesh, source.meshes.len);
+    defer gpa.free(mesh_records);
+    var triangle_count: u32 = 0;
+    var meshlet_count: u32 = 0;
+    for (source.meshes, entry.meshes, mesh_records) |mesh, out, *record| {
         record.* = .{
             .center = mesh.bounds_center,
             .radius = mesh.bounds_radius,
@@ -720,6 +732,7 @@ pub fn freeModel(self: *Renderer, entry: *ModelEntry) void {
         if (mesh.morph_offset) |offset| self.internal.morph_deltas.free(self, offset, mesh.vertex_count * mesh.morph_targets);
         if (mesh.blas) |blas| self.device.destroyAcceleration(blas);
         if (mesh.blas_building) |blas| self.device.destroyAcceleration(blas);
+        if (mesh.opacity) |micromap| self.device.destroyOpacityMicromap(micromap);
     }
     for (0..entry.meshes.len) |index| {
         if (entry.mesh_base + index < self.internal.rays.mesh_boxes.items.len) self.internal.rays.mesh_boxes.items[entry.mesh_base + index] = null;

@@ -1,7 +1,7 @@
 //! Descriptions of the objects a scene holds.
 const std = @import("std");
-const math = @import("../../math.zig");
-const gltf = @import("../../asset/gltf.zig");
+const math = @import("assets").math;
+const gltf = @import("assets").gltf;
 const gpu = @import("../gpu.zig");
 const primitives = @import("../primitives.zig");
 const render = @import("../renderer.zig");

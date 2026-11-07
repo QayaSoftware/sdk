@@ -1,10 +1,10 @@
 //! Far copies of instance groups drawn as pictures of themselves.
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const pipelines_module = @import("../renderer/pipelines.zig");
 const impostor_passes_push = @import("../shaders/push/impostor_passes.zig");
 const render = @import("../renderer.zig");
 const scene_pass = @import("../scene_pass.zig");
-const math = @import("../../math.zig");
+const math = @import("assets").math;
 const features = @import("../core/features.zig");
 const lights_feature = @import("lights.zig");
 

@@ -3,8 +3,8 @@ const pipelines_module = @import("pipelines.zig");
 const instance_update_push = @import("../shaders/push/instance_update.zig");
 const std = @import("std");
 const geometry_feature = @import("../features/geometry.zig");
-const rhi = @import("../../rhi/rhi.zig");
-const math = @import("../../math.zig");
+const rhi = @import("lrhi");
+const math = @import("assets").math;
 const gpu = @import("../gpu.zig");
 const animation = @import("../animation.zig");
 const api = @import("../api.zig");
@@ -138,7 +138,7 @@ pub fn prepareScene(self: *Renderer, scene: *SceneData, arena: *FrameArena) !Sce
         scene.records_valid = false;
     const rigid_room = if (group_rays) scene.entity_tlas_capacity else scene.rigid_tlas;
     const tlas_room = rigid_room + (if (group_rays) scene.static_count else 0) + scene.skinned_entries;
-    if (try ensureBuffer(self, &scene.tlas_instances, &scene.tlas_instances_capacity, tlas_room, @sizeOf(rhi.AccelerationInstance), "ray tracing instances", .{ .storage = true, .copy_dst = true, .acceleration_input = true })) {
+    if (try ensureBuffer(self, &scene.tlas_instances, &scene.tlas_instances_capacity, tlas_room, @sizeOf(rhi.PackedInstance), "ray tracing instances", .{ .storage = true, .copy_dst = true, .acceleration_input = true })) {
         scene.records_valid = false;
         scene.static_tlas_uploaded = false;
     }
@@ -167,8 +167,8 @@ pub fn prepareScene(self: *Renderer, scene: *SceneData, arena: *FrameArena) !Sce
     if (whole) {
         const staged = try arena.alloc(device, gpu.Instance, entity_count);
         const staged_before = try arena.alloc(device, [12]f32, entity_count);
-        const staged_tlas = try arena.alloc(device, rhi.AccelerationInstance, rigid_room);
-        @memset(staged_tlas.items, std.mem.zeroes(rhi.AccelerationInstance));
+        const staged_tlas = try arena.alloc(device, rhi.PackedInstance, rigid_room);
+        @memset(staged_tlas.items, std.mem.zeroes(rhi.PackedInstance));
         staged_records = staged.items;
         staged_previous = staged_before.items;
         update.records = .{ .buffer = staged.buffer, .offset = staged.offset };
@@ -264,7 +264,7 @@ pub fn prepareScene(self: *Renderer, scene: *SceneData, arena: *FrameArena) !Sce
     }
 
     const parity: u32 = @intCast(self.internal.frame_index & 1);
-    const skinned_tlas = try arena.alloc(device, rhi.AccelerationInstance, scene.skinned_entries);
+    const skinned_tlas = try arena.alloc(device, rhi.PackedInstance, scene.skinned_entries);
     var skinned_tlas_count: u32 = 0;
     var joint_cursor: u32 = 0;
     var bounds_cursor: u32 = 0;
@@ -445,6 +445,7 @@ pub fn prepareScene(self: *Renderer, scene: *SceneData, arena: *FrameArena) !Sce
     scene.transmissive = scene.blended_transmissive;
     const glowing = try arena.alloc(device, Glowing, scene.glowing.items.len);
     @memcpy(glowing.items, scene.glowing.items);
+    try aliasGlowing(self.internal.gpa, scene, glowing.items);
 
     if (bounds_cursor > scene.skin_bounds_capacity) {
         if (scene.skin_bounds) |buffer| device.destroyBuffer(buffer);
@@ -610,7 +611,7 @@ pub fn prepareScene(self: *Renderer, scene: *SceneData, arena: *FrameArena) !Sce
         if (!scene.static_tlas_uploaded or whole) {
             if (scene.static_tlas.items.len != 0) try device.uploadBuffer(
                 scene.tlas_instances.?,
-                @as(u64, rigid_room) * @sizeOf(rhi.AccelerationInstance),
+                @as(u64, rigid_room) * @sizeOf(rhi.PackedInstance),
                 std.mem.sliceAsBytes(scene.static_tlas.items),
             );
             scene.static_tlas_uploaded = true;
@@ -649,7 +650,7 @@ pub fn prepareScene(self: *Renderer, scene: *SceneData, arena: *FrameArena) !Sce
 /// Records the GPU side of `prepareScene`: copies and compute passes that
 /// bring the scene's instance buffers up to date.
 pub fn applySceneUpdate(self: *Renderer, cmd: *rhi.CommandEncoder, scene: *SceneData, update: scene_pass.SceneUpdate) !void {
-    const tlas_size = @sizeOf(rhi.AccelerationInstance);
+    const tlas_size = @sizeOf(rhi.PackedInstance);
     const copies = update.whole or update.skinned_tlas_count != 0;
     if (copies) cmd.sync(.all_to_transfer);
     if (update.whole and update.entity_count != 0) {
@@ -755,4 +756,67 @@ fn instanceMovesPipeline(_: *rhi.Device) pipelines_module.Desc {
 
 fn instanceRewritesPipeline(_: *rhi.Device) pipelines_module.Desc {
     return .{ .compute = .{ .name = "instance rewrites", .shader = pipelines_module.shaderCode("instance_rewrites.comp.spv") } };
+}
+
+/// Weighs each of `glowing` by its power times the square of its bounding
+/// radius, so that path tracing picks bright and large emitters more often
+/// than dim and small ones, and fills in its alias table.
+fn aliasGlowing(gpa: std.mem.Allocator, scene: *const SceneData, glowing: []Glowing) !void {
+    if (glowing.len == 0) return;
+    const weights = try gpa.alloc(f32, glowing.len);
+    defer gpa.free(weights);
+    for (glowing, weights) |glow, *weight| {
+        const radius = scene.spheres.items[glow.instance][3];
+        weight.* = glow.power * radius * radius;
+    }
+    try aliasTable(gpa, weights, glowing);
+}
+
+/// Sets `chance`, `threshold` and `alias` of each of `glowing` so that slot
+/// `i`, kept below `threshold` and else given to `alias`, picks each in
+/// proportion to `weights` (Vose's method). Overwrites `weights`.
+fn aliasTable(gpa: std.mem.Allocator, weights: []f32, glowing: []Glowing) !void {
+    var total: f32 = 0;
+    for (weights) |*weight| {
+        weight.* = @max(weight.*, 1e-6);
+        total += weight.*;
+    }
+    const count: f32 = @floatFromInt(glowing.len);
+    var small: std.ArrayList(u32) = .empty;
+    defer small.deinit(gpa);
+    var large: std.ArrayList(u32) = .empty;
+    defer large.deinit(gpa);
+    for (glowing, weights, 0..) |*glow, *weight, index| {
+        glow.chance = weight.* / total;
+        weight.* = glow.chance * count;
+        glow.alias = @intCast(index);
+        glow.threshold = 1;
+        try (if (weight.* < 1) &small else &large).append(gpa, @intCast(index));
+    }
+    while (small.items.len != 0 and large.items.len != 0) {
+        const less = small.pop().?;
+        const more = large.items[large.items.len - 1];
+        glowing[less].threshold = weights[less];
+        glowing[less].alias = more;
+        weights[more] -= 1 - weights[less];
+        if (weights[more] < 1) {
+            _ = large.pop();
+            try small.append(gpa, more);
+        }
+    }
+}
+
+test "the glowing alias table picks each in proportion to its weight" {
+    const gpa = std.testing.allocator;
+    var weights = [_]f32{ 1, 9, 0.5, 4, 0, 5.5 };
+    var glowing: [weights.len]Glowing = undefined;
+    for (&glowing, 0..) |*glow, index| glow.* = .{ .instance = @intCast(index), .triangles = 1 };
+    try aliasTable(gpa, &weights, &glowing);
+    var picked: [glowing.len]f32 = @splat(0);
+    for (glowing) |glow| {
+        picked[glow.instance] += glow.threshold;
+        picked[glow.alias] += 1 - glow.threshold;
+    }
+    for (glowing, picked) |glow, mass| try std.testing.expectApproxEqAbs(glow.chance, mass / @as(f32, @floatFromInt(glowing.len)), 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.45), glowing[1].chance, 1e-5);
 }

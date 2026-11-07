@@ -8,10 +8,10 @@ const scene_pass = @import("../scene_pass.zig");
 const resolution_feature = @import("resolution.zig");
 const filled = @import("../api.zig").filled;
 const std = @import("std");
-const nrd = @import("../nrd.zig");
+const nrd = @import("lrhi-nrd");
 const denoising = @import("../techniques/denoising.zig");
-const math = @import("../../math.zig");
-const rhi = @import("../../rhi/rhi.zig");
+const math = @import("assets").math;
+const rhi = @import("lrhi");
 const api = @import("../api.zig");
 const features = @import("../core/features.zig");
 const targets_module = @import("../core/targets.zig");
@@ -164,22 +164,22 @@ const Targets = struct {
     fn of(keep: Keep) !Targets {
         return .{
             .signals = .{
-                .direct = try keep.one("path tracing: traced", .rgba32_float, 1),
+                .direct = try keep.one("path tracing: traced", .rgba16_float, 1),
                 .albedo = try keep.one("path tracing: traced color", .rgba16_float, 1),
-                .diffuse = try keep.one("path tracing: traced bounce light", .rgba32_float, 1),
+                .diffuse = try keep.one("path tracing: traced bounce light", .rgba16_float, 1),
                 .facing = try keep.one("path tracing: traced facing", .rgba16_float, 1),
                 .lamp = try keep.one("path tracing: traced lamp light", .rgba16_float, 1),
-                .specular = try keep.one("path tracing: traced reflections", .rgba32_float, 1),
+                .specular = try keep.one("path tracing: traced reflections", .rgba16_float, 1),
                 .surface = try keep.one("path tracing: traced surface", .rgba16_float, 1),
             },
             .reservoir = try keep.pair("path tracing light samples", .rgba32_float),
             .accum = try keep.pair("path tracing", .rgba32_float),
             .guide = try keep.pair("path tracing guide", .rgba16_float),
-            .soft = try keep.pair("path tracing grainy light", .rgba32_float),
+            .soft = try keep.pair("path tracing grainy light", .rgba16_float),
             .facing = try keep.pair("path tracing facing", .rgba16_float),
             .surface = try keep.pair("path tracing surface", .rgba16_float),
             .lamp = try keep.pair("path tracing lamp light", .rgba16_float),
-            .gloss = try keep.pair("path tracing reflections gathered", .rgba32_float),
+            .gloss = try keep.pair("path tracing reflections gathered", .rgba16_float),
         };
     }
 };
@@ -762,7 +762,7 @@ pub fn pathTrace(renderer: *Renderer, p: *const ScenePass, state: *View) !bool {
 }
 
 fn pathGatherPipeline(_: *rhi.Device) pipelines_module.Desc {
-    return pipelines_module.pass("path tracing gather", pipelines_module.shaderCode("pathtrace_gather.frag.spv"), &.{ .{ .format = .rgba32_float }, .{ .format = .rgba16_float }, .{ .format = .rgba32_float }, .{ .format = .rgba16_float }, .{ .format = .rgba16_float }, .{ .format = .rgba32_float }, .{ .format = .rgba16_float } });
+    return pipelines_module.pass("path tracing gather", pipelines_module.shaderCode("pathtrace_gather.frag.spv"), &.{ .{ .format = .rgba32_float }, .{ .format = .rgba16_float }, .{ .format = .rgba16_float }, .{ .format = .rgba16_float }, .{ .format = .rgba16_float }, .{ .format = .rgba16_float }, .{ .format = .rgba16_float } });
 }
 
 fn nrdComposePipeline(_: *rhi.Device) pipelines_module.Desc {
@@ -802,5 +802,5 @@ fn pathTraceComputePipeline(device: *rhi.Device) pipelines_module.Desc {
 }
 
 fn pathTracePipeline(device: *rhi.Device) pipelines_module.Desc {
-    return pipelines_module.pass("path tracing", if (device.caps.ray_tracing) pipelines_module.shaderCode("pathtrace_rt.frag.spv") else pipelines_module.shaderCode("pathtrace.frag.spv"), &.{ .{ .format = .rgba32_float }, .{ .format = .rgba16_float }, .{ .format = .rgba32_float }, .{ .format = .rgba16_float }, .{ .format = .rgba16_float }, .{ .format = .rgba32_float }, .{ .format = .rgba16_float }, .{ .format = .rgba32_float } });
+    return pipelines_module.pass("path tracing", if (device.caps.ray_tracing) pipelines_module.shaderCode("pathtrace_rt.frag.spv") else pipelines_module.shaderCode("pathtrace.frag.spv"), &.{ .{ .format = .rgba16_float }, .{ .format = .rgba16_float }, .{ .format = .rgba16_float }, .{ .format = .rgba16_float }, .{ .format = .rgba16_float }, .{ .format = .rgba16_float }, .{ .format = .rgba16_float }, .{ .format = .rgba32_float } });
 }

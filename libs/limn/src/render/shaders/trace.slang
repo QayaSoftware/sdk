@@ -22,23 +22,24 @@ float3 barycentricWeights(float2 barycentric) {
 }
 
 /// Whether a hit on alpha tested geometry lands on a drawn part of it.
+/// Reads only the vertex attributes alpha depends on.
 bool rayCandidateSolid(FrameConstants frame, uint instance_index, uint primitive, float2 barycentric) {
     Instance instance = frame.instances.data[instance_index];
     Material material = loadAligned<16>(frame.materials.data + instance.material);
     if ((material.flags & MATERIAL_ALPHA_TEST) == 0u) return true;
-    Mesh mesh = loadAligned<16>(frame.meshes.data + instance.mesh);
-    uint base = mesh.index_offset + primitive * 3u;
-    Vertex v0 = frame.vertices.data[instance.vertex_offset + frame.indices.data[base]];
-    Vertex v1 = frame.vertices.data[instance.vertex_offset + frame.indices.data[base + 1u]];
-    Vertex v2 = frame.vertices.data[instance.vertex_offset + frame.indices.data[base + 2u]];
+    uint base = frame.meshes.data[instance.mesh].index_offset + primitive * 3u;
+    Vertex* vertices = frame.vertices.data + instance.vertex_offset;
+    uint i0 = frame.indices.data[base];
+    uint i1 = frame.indices.data[base + 1u];
+    uint i2 = frame.indices.data[base + 2u];
     float3 lambda = barycentricWeights(barycentric);
-    float alpha = material.base_color.a * (unpackUnorm(v0.color).a * lambda.x + unpackUnorm(v1.color).a * lambda.y + unpackUnorm(v2.color).a * lambda.z);
-    if (material.base_color_texture != INVALID_ID) {
-        float2 uv = (material.uv_sets & 1u) != 0u
-            ? v0.uv1 * lambda.x + v1.uv1 * lambda.y + v2.uv1 * lambda.z
-            : v0.uv * lambda.x + v1.uv * lambda.y + v2.uv * lambda.z;
-        alpha *= sampleTextureLod(material.base_color_texture, material.sampler_index, materialUv(material, uv), 0.0).a;
-    }
+    float3 vertex_alpha = float3(unpackUnorm(vertices[i0].color).a, unpackUnorm(vertices[i1].color).a, unpackUnorm(vertices[i2].color).a);
+    float alpha = material.base_color.a * dot(vertex_alpha, lambda);
+    if (alpha < material.alpha_cutoff || material.base_color_texture == INVALID_ID) return alpha >= material.alpha_cutoff;
+    float2 uv = (material.uv_sets & 1u) != 0u
+        ? vertices[i0].uv1 * lambda.x + vertices[i1].uv1 * lambda.y + vertices[i2].uv1 * lambda.z
+        : vertices[i0].uv * lambda.x + vertices[i1].uv * lambda.y + vertices[i2].uv * lambda.z;
+    alpha *= sampleTextureLod(material.base_color_texture, material.sampler_index, materialUv(material, uv), 0.0).a;
     return alpha >= material.alpha_cutoff;
 }
 

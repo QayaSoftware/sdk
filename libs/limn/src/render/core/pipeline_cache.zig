@@ -1,7 +1,7 @@
 //! Pipelines built from their descriptions the first time each is asked for,
 //! and kept by a hash of the description. Internal to the renderer.
 const std = @import("std");
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 
 /// What a pipeline is built from.
 pub const Desc = union(enum) {

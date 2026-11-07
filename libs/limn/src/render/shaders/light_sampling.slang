@@ -6,9 +6,14 @@
 /// frame to frame. The includer provides `Surface`, `surfaceResponse` and
 /// `random()`.
 
+/// `Glowing` in state.zig.
 struct Glowing {
     uint instance;
     uint triangles;
+    float power;
+    float chance;
+    float threshold;
+    uint alias;
 };
 
 /// The lights to sample: the first `light_count` of `FrameConstants.lights`,
@@ -145,7 +150,7 @@ float3 sampleLight(LightSet lights, FrameConstants frame, Surface surface, float
     reach = max(reach - 0.004, 0.0);
     float facing = abs(dot(across, toward)) / (2.0 * area);
     if (facing <= 1e-4 || dot(surface.flat_normal, toward) <= 0.0) return float3(0.0);
-    rarity = area * float(chosen.triangles) * float(lights.glowing_count);
+    rarity = area * float(chosen.triangles) / max(chosen.chance, 1e-12);
     float3 arriving = frame.materials.data[instance.material].emissive * (facing / max(distance_squared, 0.01));
     float3 response = surfaceResponse(surface, view, toward, shine);
     shine *= arriving;
@@ -222,7 +227,9 @@ Resampling freshCandidates(LightSet lights, FrameConstants frame, Surface surfac
         resampling.reservoir.count -= all / float(lamps) - 1.0;
     }
     for (uint index = 0u; index < glows; index++) {
-        uint chosen = min(uint(random() * float(lights.glowing_count)), lights.glowing_count - 1u);
+        float slot = random() * float(lights.glowing_count);
+        uint chosen = min(uint(slot), lights.glowing_count - 1u);
+        if (frac(slot) >= lights.glowing[chosen].threshold) chosen = lights.glowing[chosen].alias;
         uint triangles = lights.glowing[chosen].triangles;
         uint facet = min(uint(random() * float(triangles)), triangles - 1u);
         LightSample pick = lightSample(glow_source + 1u + chosen, facet, randomPlace());

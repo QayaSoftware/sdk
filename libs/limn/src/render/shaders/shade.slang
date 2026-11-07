@@ -428,6 +428,10 @@ ShadeOutput fragmentMain([[vk::location(0)]] float2 in_uv, float4 fragment : SV_
         }
         gathered = float4(total.rgb / max(weight_total, 1e-6), 1.0);
     }
+    sun_mask_texture = push.sun_mask;
+    sun_mask_light = push.sun_light;
+    sun_mask_pixel = fragment.xy;
+    sun_mask_depth = surface.view_depth;
     soft_history_texture = push.shadow_history;
     soft_history_uv = in_uv - result.motion;
     soft_history_depth_texture = push.shadow_depth;
@@ -462,3 +466,45 @@ ShadeOutput fragmentMain([[vk::location(0)]] float2 in_uv, float4 fragment : SV_
 #endif
     return result;
 }
+
+#ifdef SUN_SHADOW
+#include "shade.SunShadowPush.slang"
+
+[[vk::push_constant]] SunShadowPush sun_push;
+
+float3 sunShadowPosition(FrameConstants frame, int2 pixel, int2 size) {
+    int2 at = clamp(pixel, int2(0), size - 1);
+    float depth = fetchTexel(sun_push.depth_texture, at).r;
+    return worldPositionFromDepth((float2(at) + 0.5) * frame.inv_resolution, max(depth, 1e-6), frame.inv_view_proj);
+}
+
+/// The sun's traced shadow for one pixel of each 2x2 block, the one `phase`
+/// picks, with the view depth it was traced at, for shading to upsample:
+/// a quarter of the rays shading would trace itself. The surface's normal
+/// comes from the depth around it.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void sunShadowMain(uint3 id : SV_DispatchThreadID) {
+    FrameConstants frame = sun_push.frame;
+    int2 size = int2(frame.resolution);
+    if (any(int2(id.xy) * 2 >= size)) return;
+    int2 pixel = min(int2(id.xy) * 2 + int2(sun_push.phase & 1u, sun_push.phase >> 1u), size - 1);
+    float depth = fetchTexel(sun_push.depth_texture, pixel).r;
+    float lit = 1.0;
+    float view_depth = 1e6;
+    if (depth > 0.0) {
+        view_depth = linearDepth(depth, frame.depth_terms);
+        float3 position = sunShadowPosition(frame, pixel, size);
+        float3 across = sunShadowPosition(frame, pixel + int2(1, 0), size) - position;
+        float3 down = sunShadowPosition(frame, pixel + int2(0, 1), size) - position;
+        if (dot(across, across) < 1e-12) across = position - sunShadowPosition(frame, pixel - int2(1, 0), size);
+        if (dot(down, down) < 1e-12) down = position - sunShadowPosition(frame, pixel - int2(0, 1), size);
+        float3 normal = normalize(cross(down, across));
+        if (dot(normal, eyePoint(frame, position) - position) < 0.0) normal = -normal;
+        Light light = frame.lights.lights.data[sun_push.sun_light];
+        float3 l = -light.direction;
+        lit = dot(normal, l) > 0.0 ? tracedShadow(frame, light, position, normal, l, 1e4, interleavedGradientNoise(float2(pixel), frame.frame_index)) : 0.0;
+    }
+    storage_2d[sun_push.mask][id.xy] = float4(lit, view_depth, 0.0, 0.0);
+}
+#endif

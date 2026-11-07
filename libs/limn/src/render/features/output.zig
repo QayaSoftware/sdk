@@ -1,6 +1,6 @@
 //! How a view's picture is encoded for its target.
 const render = @import("../renderer.zig");
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const api = @import("../api.zig");
 const features = @import("../core/features.zig");
 

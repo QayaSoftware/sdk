@@ -1,13 +1,13 @@
 //! Fonts and the glyphs prepared for them. Internal to the renderer.
 const std = @import("std");
-const rhi = @import("../../rhi/rhi.zig");
-const gltf = @import("../../asset/gltf.zig");
+const rhi = @import("lrhi");
+const gltf = @import("assets").gltf;
 const text_layout = @import("../text_layout.zig");
 const api = @import("../api.zig");
 const render = @import("../renderer.zig");
 
 const Renderer = render.Renderer;
-const font_module = @import("font_baker").font;
+const font_module = @import("assets").font;
 const Font = api.Font;
 
 /// Distance-field fonts for draw lists.

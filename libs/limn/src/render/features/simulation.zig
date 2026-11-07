@@ -13,9 +13,9 @@ const particles_feature = @import("particles.zig");
 const fluids_feature = @import("fluids.zig");
 const gpu = @import("../gpu.zig");
 const WaterState = @import("../state.zig").WaterState;
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const std = @import("std");
-const math = @import("../../math.zig");
+const math = @import("assets").math;
 const features = @import("../core/features.zig");
 
 const packTint = render.packTint;

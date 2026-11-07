@@ -2,7 +2,7 @@
 //! restarted when what it was started for changes, not retried once it has
 //! refused, and told when its history is stale.
 const std = @import("std");
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 
 /// A place for one `Backend`, which has `destroy`, started for a `Key`.
 pub fn Slot(comptime Backend: type, comptime Key: type) type {

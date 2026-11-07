@@ -1,8 +1,8 @@
 //! The application's own passes, run at the points of a view's frame they ask for.
 const std = @import("std");
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const api = @import("../api.zig");
-const math = @import("../../math.zig");
+const math = @import("assets").math;
 const features = @import("../core/features.zig");
 const renderer_state = @import("../state.zig");
 const view_math = @import("../renderer/view_math.zig");

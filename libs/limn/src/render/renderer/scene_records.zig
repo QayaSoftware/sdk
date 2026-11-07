@@ -1,7 +1,7 @@
 //! Writing a scene's instance records each frame: every record at once, or only the changes, across threads. Internal to the renderer.
 const std = @import("std");
-const rhi = @import("../../rhi/rhi.zig");
-const math = @import("../../math.zig");
+const rhi = @import("lrhi");
+const math = @import("assets").math;
 const gpu = @import("../gpu.zig");
 const renderer_state = @import("../state.zig");
 const render = @import("../renderer.zig");
@@ -35,7 +35,7 @@ pub const PrepareWhole = struct {
     scene: *SceneData,
     records: []gpu.Instance,
     previous: [][12]f32,
-    tlas: []rhi.AccelerationInstance,
+    tlas: []rhi.PackedInstance,
     chunks: []PrepareChunk,
 
     const Batch = fn (PrepareWhole, usize) void;

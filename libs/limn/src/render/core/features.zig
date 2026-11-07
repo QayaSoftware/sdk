@@ -12,7 +12,7 @@
 //! and is listed in `list`.
 const std = @import("std");
 const upscaling = @import("../techniques/upscaling.zig");
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const gpu = @import("../gpu.zig");
 const api = @import("../api.zig");
 const graph_module = @import("graph.zig");

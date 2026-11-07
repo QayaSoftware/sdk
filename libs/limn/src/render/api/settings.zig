@@ -1,6 +1,6 @@
 //! Per-view settings, one nested struct per feature.
 const std = @import("std");
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const features = @import("../core/features.zig");
 
 const api = @import("../api.zig");
@@ -195,7 +195,7 @@ pub const Denoiser = enum {
     /// DLSS Ray Reconstruction; needs `Upscaler.dlss`.
     ray_reconstruction,
     /// NVIDIA Real-time Denoisers (ReLAX) for bounced light and
-    /// reflections; needs the NRD SDK (`zig build nrd-sdk`).
+    /// reflections; needs the NRD SDK (`zig build lrhi-nrd-sdk`).
     nrd,
 };
 

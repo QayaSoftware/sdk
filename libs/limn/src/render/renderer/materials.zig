@@ -1,7 +1,7 @@
 //! Materials: their GPU records, samplers and custom shaders. Internal to the renderer.
 const std = @import("std");
-const rhi = @import("../../rhi/rhi.zig");
-const gltf = @import("../../asset/gltf.zig");
+const rhi = @import("lrhi");
+const gltf = @import("assets").gltf;
 const gpu = @import("../gpu.zig");
 const api = @import("../api.zig");
 const renderer_state = @import("../state.zig");

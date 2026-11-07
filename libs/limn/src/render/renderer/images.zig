@@ -1,10 +1,10 @@
 //! Images and light profiles. Internal to the renderer.
 const std = @import("std");
 const renderer_state = @import("../state.zig");
-const rhi = @import("../../rhi/rhi.zig");
-const gltf = @import("../../asset/gltf.zig");
-const ktx2 = @import("../../asset/ktx2.zig");
-const texture_codec = @import("texture_codec");
+const rhi = @import("lrhi");
+const gltf = @import("assets").gltf;
+const ktx2 = @import("assets").ktx2;
+const texture_codec = @import("assets").texture;
 const png = @import("../../png.zig");
 const gpu = @import("../gpu.zig");
 const api = @import("../api.zig");
@@ -111,7 +111,7 @@ pub const Images = struct {
         const bytes = try gltf.readFile(self.internal.gpa, self.internal.io, path);
         defer self.internal.gpa.free(bytes);
         if (ktx2.isKtx2(bytes)) {
-            const texture = try ktx2.read(self.internal.gpa, bytes, renderer_state.basisTarget(self.device.caps));
+            const texture = try ktx2.read(self.internal.gpa, bytes, @import("lrhi-assets").basisTarget(self.device.caps));
             defer self.internal.gpa.free(texture.data);
             return createImageFromLevels(self, texture);
         }
@@ -275,39 +275,9 @@ fn forgetMaterialImage(self: *Renderer, image: Image) void {
 
 /// Makes an image from mip levels already in a GPU format.
 fn createImageFromLevels(self: *Renderer, source: ktx2.Texture) !Image {
-    self.lock();
-    defer self.unlock();
-    const device = self.device;
-    if (source.faces != 1 or source.layers != 1) return error.UnsupportedTextureFormat;
-    const readable = switch (source.format) {
-        .rgba8, .rgba16f => true,
-        .astc4x4 => device.caps.astc_textures,
-        else => device.caps.bc_textures,
-    };
-    if (!readable) return error.UnsupportedTextureFormat;
-    const format: rhi.Format = switch (source.format) {
-        .bc7 => if (source.srgb) .bc7_srgb else .bc7_unorm,
-        .bc1 => if (source.srgb) .bc1_srgb else .bc1_unorm,
-        .bc3 => if (source.srgb) .bc3_srgb else .bc3_unorm,
-        .bc4 => .bc4_unorm,
-        .bc5 => .bc5_unorm,
-        .bc6h => .bc6h_ufloat,
-        .rgba8 => if (source.srgb) .rgba8_srgb else .rgba8_unorm,
-        .rgba16f => .rgba16_float,
-        .astc4x4 => if (source.srgb) .astc_4x4_srgb else .astc_4x4_unorm,
-    };
-    const texture = try device.createTexture(.{
-        .name = "image",
-        .width = source.width,
-        .height = source.height,
-        .format = format,
-        .usage = .{ .sampled = true, .copy_dst = true },
-        .mip_levels = source.levels,
-    });
-    errdefer device.destroyTexture(texture);
-    try device.uploadTextureLevels(texture, 0, 0, source.data);
-    const index = device.textureIndex(texture);
-    return own(self, texture, index, source.width, source.height);
+    const texture = try @import("lrhi-assets").uploadTexture(self.device, source, "image");
+    errdefer self.device.destroyTexture(texture);
+    return own(self, texture, self.device.textureIndex(texture), source.width, source.height);
 }
 
 /// Reads an IES LM-63 photometric file and returns brightness at 181

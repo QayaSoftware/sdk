@@ -22,6 +22,11 @@ docs_step: *std.Build.Step,
 docs_trim: *std.Build.Step.Compile,
 /// The libraries added, for the docs' index.
 libraries: std.ArrayList([]const u8) = .empty,
+/// Every library built with the thread sanitizer (`-Dtsan`).
+thread_sanitizer: bool,
+/// Run slangc and glslangValidator from PATH instead of fetched builds
+/// (`-Dsystem_tools`).
+system_tools: bool,
 /// False while the NDK an Android build needs is being fetched.
 ready: bool,
 
@@ -39,6 +44,8 @@ pub fn create(b: *std.Build) *Sdk {
             .name = "docs_trim",
             .root_module = b.createModule(.{ .root_source_file = b.path("build/docs_trim.zig"), .target = b.graph.host, .optimize = .safe }),
         }),
+        .thread_sanitizer = b.option(bool, "tsan", "Build with the thread sanitizer, with -Dtarget=x86_64-linux-gnu; NVIDIA drivers make threads it cannot see, so run `limn-checks` on Mesa (VK_DRIVER_FILES=.../lvp_icd.x86_64.json)") orelse false,
+        .system_tools = b.option(bool, "system_tools", "Run slangc and glslangValidator from PATH instead of fetched builds (default: false)") orelse false,
         .ready = !target.result.abi.isAndroid() or useAndroidNdk(b, target),
     };
     const cross_step = b.step("cross", "Build everything for every target, into zig-out/cross/<target>");
@@ -63,6 +70,7 @@ pub fn add(sdk: *Sdk, comptime name: []const u8, comptime library: type) void {
         .root_source_file = b.path("libs/" ++ name ++ "/src/root.zig"),
         .target = sdk.target,
         .optimize = sdk.optimize,
+        .sanitize_thread = sdk.thread_sanitizer,
     });
     const lib = b.allocator.create(Library) catch @panic("OOM");
     lib.* = .{

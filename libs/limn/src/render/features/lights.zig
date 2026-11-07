@@ -1,6 +1,6 @@
 //! Sorts a view's local lights and decals into clusters for shading to look up.
-const rhi = @import("../../rhi/rhi.zig");
-const math = @import("../../math.zig");
+const rhi = @import("lrhi");
+const math = @import("assets").math;
 const pipelines_module = @import("../renderer/pipelines.zig");
 const cluster_push = @import("../shaders/push/cluster.zig");
 const features = @import("../core/features.zig");

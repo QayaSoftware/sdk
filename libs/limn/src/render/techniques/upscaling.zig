@@ -1,11 +1,11 @@
 //! The vendor upscalers a view can resolve with and the frame generators
 //! that go with them, behind one set of inputs and one lifecycle.
 const std = @import("std");
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const api = @import("../api.zig");
 const slot = @import("../core/slot.zig");
-const ffx = @import("../ffx.zig");
-const dlss = @import("../dlss.zig");
+const ffx = @import("lrhi-fsr");
+const dlss = @import("lrhi-dlss");
 
 pub const Technique = enum {
     fsr2,

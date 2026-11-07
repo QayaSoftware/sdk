@@ -1,5 +1,5 @@
 //! Height fog lit by the sun, the sky and, with `local_lights`, the local lights.
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const pipelines_module = @import("../renderer/pipelines.zig");
 const fog_push = @import("../shaders/push/fog.zig");
 const scene_pass = @import("../scene_pass.zig");

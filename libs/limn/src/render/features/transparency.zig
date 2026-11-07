@@ -7,10 +7,10 @@ const renderer_state = @import("../state.zig");
 const scene_pass = @import("../scene_pass.zig");
 const render = @import("../renderer.zig");
 const gpu = @import("../gpu.zig");
-const math = @import("../../math.zig");
+const math = @import("assets").math;
 const std = @import("std");
 const lights_feature = @import("lights.zig");
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const api = @import("../api.zig");
 const features = @import("../core/features.zig");
 

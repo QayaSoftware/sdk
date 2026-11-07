@@ -1,6 +1,6 @@
 //! Pipelines and the shader code they are built from. Internal to the renderer.
 const std = @import("std");
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const shader_sources = @import("shader_sources");
 const renderer_state = @import("../state.zig");
 const render = @import("../renderer.zig");

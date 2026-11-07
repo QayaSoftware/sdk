@@ -1,25 +1,25 @@
 //! A GPU-driven Vulkan 1.3 renderer for 2D and 3D. `Renderer` draws scenes of
-//! glTF models through the full frame pipeline; `rhi` is the explicit device
-//! layer it is built on.
+//! glTF models through the full frame pipeline, on the device layer of the
+//! `lrhi` library.
 const renderer = @import("render/renderer.zig");
 const api = @import("render/api.zig");
 
-/// The explicit Vulkan 1.3 device layer. `Renderer.device` is the shared
-/// device.
-pub const rhi = @import("rhi/rhi.zig");
+/// The `lrhi` library, the explicit device layer limn is built on.
+/// `Renderer.device` is the shared device.
+pub const rhi = @import("lrhi");
 /// Vectors, quaternions and column-major 4x4 matrices. Right-handed, +Y
 /// up, cameras look down -Z; `mul(a, b)` applies `b` first.
-pub const math = @import("math.zig");
+pub const math = @import("assets").math;
 /// Simple shapes as mesh data; see `Renderer.models.createPrimitive`.
 pub const primitives = @import("render/primitives.zig");
 /// A minimal PNG encoder.
 pub const png = @import("png.zig");
 /// TrueType loading and glyph metrics; see `Renderer.fonts.load`.
-pub const font = @import("font_baker").font;
+pub const font = @import("assets").font;
 /// KTX2 texture files, including Basis Universal and Zstandard.
-pub const ktx2 = @import("asset/ktx2.zig");
+pub const ktx2 = @import("assets").ktx2;
 /// DDS texture files with block-compressed data.
-pub const dds = @import("asset/dds.zig");
+pub const dds = @import("assets").dds;
 
 /// Owns the device, assets, scenes and frame pipeline. Callable from any
 /// thread; `render` from one thread at a time.
@@ -286,15 +286,10 @@ pub const Text3dOptions = draw_list.Text3dOptions;
 pub const Alignment = draw_list.Alignment;
 
 test {
-    _ = @import("math.zig");
-    _ = @import("asset/gltf.zig");
-    _ = @import("asset/fbx.zig");
-    _ = @import("asset/model_cache.zig");
-    _ = @import("asset/ktx2.zig");
-    _ = @import("asset/dds.zig");
     _ = @import("render/text_layout.zig");
     _ = @import("render/renderer.zig");
     _ = @import("render/renderer/images.zig");
+    _ = @import("render/renderer/scene_update.zig");
     _ = @import("render/renderer/view_math.zig");
     _ = @import("render/core/pipeline_cache.zig");
     _ = @import("render/core/graph.zig");
@@ -310,5 +305,5 @@ test {
     _ = @import("render/animation.zig");
     _ = @import("render/draw_list.zig");
     _ = @import("render/bvh.zig");
-    _ = @import("rhi/rhi.zig");
+    _ = @import("lrhi");
 }

@@ -1,6 +1,6 @@
 //! What only scenes use, made the first time a scene is drawn. Internal to the renderer.
 const std = @import("std");
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const gpu = @import("../gpu.zig");
 const pipelines_module = @import("pipelines.zig");
 const renderer_state = @import("../state.zig");

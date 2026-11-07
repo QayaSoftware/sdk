@@ -3,7 +3,7 @@
 //! traced reflections and shadows, path tracing, lightmaps and fluid obstacles
 //! all trace it; none of them owns it. Internal to the renderer.
 const std = @import("std");
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const api = @import("../api.zig");
 const render = @import("../renderer.zig");
 const scene_pass = @import("../scene_pass.zig");
@@ -128,7 +128,6 @@ pub fn buildPendingBlas(self: *Renderer, cmd: *rhi.CommandEncoder, frame_index: 
     if (self.internal.rays.blas_pending == 0) return;
     const device = self.device;
     var still_pending: u32 = 0;
-    var finished = false;
     for (0..self.models.internal.table.slotCount()) |slot_index| if (self.models.internal.table.slotAt(slot_index).value) |*entry| {
         if (!entry.blas_pending) continue;
         const frame_now = frame_index orelse {
@@ -145,7 +144,7 @@ pub fn buildPendingBlas(self: *Renderer, cmd: *rhi.CommandEncoder, frame_index: 
                     if (mesh.blas_building orelse mesh.blas) |blas| try cmd.measureBlas(blas);
                 }
             }
-            finished = adoptBlas(self, entry) or finished;
+            if (adoptBlas(self, entry)) self.internal.asset_generation += 1;
             continue;
         };
         if (entry.blas_job) |job| {
@@ -155,7 +154,7 @@ pub fn buildPendingBlas(self: *Renderer, cmd: *rhi.CommandEncoder, frame_index: 
             }
             device.releaseDetached(job);
             entry.blas_job = null;
-            finished = adoptBlas(self, entry) or finished;
+            if (adoptBlas(self, entry)) self.internal.asset_generation += 1;
             continue;
         }
         var detached = false;
@@ -175,7 +174,6 @@ pub fn buildPendingBlas(self: *Renderer, cmd: *rhi.CommandEncoder, frame_index: 
         entry.blas_job = try device.submitDetached(encoder, frame_now);
     };
     self.internal.rays.blas_pending = still_pending;
-    if (finished) self.internal.asset_generation += 1;
 }
 
 /// Has `compactBuiltBlas` look at the model's structures.
@@ -194,9 +192,9 @@ const compactions_per_frame = 64;
 fn compactBuiltBlas(self: *Renderer, cmd: *rhi.CommandEncoder) !void {
     const device = self.device;
     var budget: u32 = compactions_per_frame;
-    var replaced = false;
     for (0..self.models.internal.table.slotCount()) |slot_index| if (self.models.internal.table.slotAt(slot_index).value) |*entry| {
         if (!entry.blas_compacting or entry.blas_pending) continue;
+        var replaced_any = false;
         var waiting = false;
         for (entry.meshes) |*mesh| {
             const built = mesh.blas orelse continue;
@@ -213,15 +211,15 @@ fn compactBuiltBlas(self: *Renderer, cmd: *rhi.CommandEncoder) !void {
             cmd.compactBlas(built, compact);
             device.destroyAcceleration(built);
             mesh.blas = compact;
-            replaced = true;
+            replaced_any = true;
             budget -= 1;
         }
+        if (replaced_any) self.internal.asset_generation += 1;
         if (!waiting) {
             entry.blas_compacting = false;
             self.internal.rays.blas_compacting -= 1;
         }
     };
-    if (replaced) self.internal.asset_generation += 1;
 }
 
 /// Makes a model's finished acceleration structures the live ones.

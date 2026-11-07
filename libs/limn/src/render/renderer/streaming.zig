@@ -1,8 +1,8 @@
 //! Geometry and texture streaming: what each frame keeps resident. Internal to the renderer.
 const std = @import("std");
 const geometry_feature = @import("../features/geometry.zig");
-const rhi = @import("../../rhi/rhi.zig");
-const math = @import("../../math.zig");
+const rhi = @import("lrhi");
+const math = @import("assets").math;
 const gpu = @import("../gpu.zig");
 const api = @import("../api.zig");
 const renderer_state = @import("../state.zig");
@@ -192,18 +192,32 @@ fn restoreGeometry(self: *Renderer, entry: *ModelEntry) !void {
     entry.geometry_resident = true;
 }
 
-pub fn createStreamTexture(self: *Renderer, stream: *const TextureStream, wanted_first: u32) !rhi.Texture {
+/// A streamed texture already on the GPU, whose levels a new one of the
+/// same chain copies rather than reading and uploading them again.
+pub const KeptLevels = struct {
+    texture: rhi.Texture,
+    /// Its largest level's place in the chain (`TextureStream.resident`).
+    first: u32,
+    cmd: *rhi.CommandEncoder,
+};
+
+/// The texture of `stream` from level `wanted_first` down. Levels that
+/// `kept` holds are copied from it on the GPU; the rest are read from the
+/// asset cache file, or the tail kept in memory, and uploaded.
+pub fn createStreamTexture(self: *Renderer, stream: *const TextureStream, wanted_first: u32, kept: ?KeptLevels) !rhi.Texture {
     const device = self.device;
     var first = wanted_first;
+    const copied_from: u32 = if (kept) |old| @max(old.first, first) else stream.levels;
     var from_file: []u8 = &.{};
     defer self.internal.gpa.free(from_file);
     const file_start = stream.levelOffset(first);
-    if (file_start < stream.tail_offset) {
-        if (readStreamLevels(self, stream, file_start, stream.tail_offset - file_start)) |bytes| {
+    const file_end = @min(stream.levelOffset(copied_from), stream.tail_offset);
+    if (file_start < file_end) {
+        if (readStreamLevels(self, stream, file_start, file_end - file_start)) |bytes| {
             from_file = bytes;
         } else |err| {
             std.log.warn("texture streaming: could not read {s}: {s}", .{ stream.path, @errorName(err) });
-            first = stream.floor;
+            first = @min(stream.floor, copied_from);
         }
     }
     const texture = try device.createTexture(.{
@@ -211,17 +225,21 @@ pub fn createStreamTexture(self: *Renderer, stream: *const TextureStream, wanted
         .width = @max(stream.width >> @intCast(first), 1),
         .height = @max(stream.height >> @intCast(first), 1),
         .format = stream.format(),
-        .usage = .{ .sampled = true, .copy_dst = true },
+        .usage = .{ .sampled = true, .copy_dst = true, .copy_src = true },
         .mip_levels = stream.levels - first,
     });
     errdefer device.destroyTexture(texture);
     var offset = stream.levelOffset(first);
     for (first..stream.levels) |level| {
         const size = stream.levelSize(@intCast(level));
+        defer offset += size;
+        if (level >= copied_from) continue;
         const bytes = if (offset < stream.tail_offset) from_file[offset - file_start ..][0..size] else stream.data[offset - stream.tail_offset ..][0..size];
         try device.uploadTexture(texture, @intCast(level - first), 0, bytes);
-        offset += size;
     }
+    if (kept) |old| if (copied_from < stream.levels) {
+        old.cmd.copyTextureMips(old.texture, copied_from - old.first, texture, copied_from - first, stream.levels - copied_from);
+    };
     return texture;
 }
 
@@ -469,7 +487,7 @@ pub fn updateTextureStreaming(self: *Renderer, frame: rhi.Frame, desc: FrameDesc
                     if (!over and stream.low_frames < streaming.evict_delay_frames) continue;
                     stream.low_frames = 0;
                 }
-                const texture = try createStreamTexture(self, stream, goal);
+                const texture = try createStreamTexture(self, stream, goal, .{ .texture = entry.textures[index].?, .first = stream.resident, .cmd = frame.cmd });
                 device.destroyTexture(entry.textures[index].?);
                 entry.textures[index] = texture;
                 stream.resident = goal;

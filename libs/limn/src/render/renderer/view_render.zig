@@ -7,8 +7,8 @@ const clouds_feature = @import("../features/clouds.zig");
 const post_feature = @import("../features/post.zig");
 const global_illumination_feature = @import("../features/global_illumination.zig");
 const filled = @import("../api.zig").filled;
-const rhi = @import("../../rhi/rhi.zig");
-const math = @import("../../math.zig");
+const rhi = @import("lrhi");
+const math = @import("assets").math;
 const gpu = @import("../gpu.zig");
 const api = @import("../api.zig");
 const renderer_state = @import("../state.zig");
@@ -161,7 +161,7 @@ pub fn stageView(self: *Renderer, frame: rhi.Frame, requested: ViewDesc, delta_t
         .temporal_antialiasing = desc.settings.resolution.temporal_antialiasing,
         .orthographic = desc.camera.orthographic != null,
         .upscalers = upscaling.Availability.of(device, self.internal.dlss),
-        .nrd = @import("../nrd.zig").available and device.caps.storage_images,
+        .nrd = @import("lrhi-nrd").available and device.caps.storage_images,
         .upscaler = desc.settings.resolution.upscaler,
         .path_tracing = pathTracingSupport(self),
         .downgrades = &self.internal.downgrades,

@@ -2,9 +2,9 @@
 //! `.builtin` needs no state of its own and DLSS Ray Reconstruction runs as
 //! the view's upscaler, so the slot holds the backends that keep any. Each
 //! reads the signal set of `path_tracing.Signals`.
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const slot = @import("../core/slot.zig");
-const nrd = @import("../nrd.zig");
+const nrd = @import("lrhi-nrd");
 
 /// What a denoiser was started for.
 pub const Key = struct { size: [2]u32 };

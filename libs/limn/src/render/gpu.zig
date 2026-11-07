@@ -1,7 +1,7 @@
 //! CPU mirrors of the structures in shaders/common.slang. Scalar block
 //! layout matches `extern struct` when every field is naturally aligned.
 const std = @import("std");
-const gltf = @import("../asset/gltf.zig");
+const gltf = @import("assets").gltf;
 const frame_constants = @import("core/frame_constants.zig");
 
 pub const FrameConstants = frame_constants.FrameConstants;

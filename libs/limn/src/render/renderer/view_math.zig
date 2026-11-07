@@ -1,6 +1,6 @@
 //! Culling planes, shadow cascades and sample sequences of a view. Internal to the renderer.
 const std = @import("std");
-const math = @import("../../math.zig");
+const math = @import("assets").math;
 const gpu = @import("../gpu.zig");
 const api = @import("../api.zig");
 const renderer_state = @import("../state.zig");

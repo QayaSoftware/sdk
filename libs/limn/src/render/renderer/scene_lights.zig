@@ -1,7 +1,7 @@
 //! A scene's light records and their shadow atlas tiles, uploaded when they change. Internal to the renderer.
 const std = @import("std");
-const rhi = @import("../../rhi/rhi.zig");
-const math = @import("../../math.zig");
+const rhi = @import("lrhi");
+const math = @import("assets").math;
 const gpu = @import("../gpu.zig");
 const renderer_state = @import("../state.zig");
 const scene_pass = @import("../scene_pass.zig");

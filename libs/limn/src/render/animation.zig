@@ -1,8 +1,8 @@
 //! Animation sampling for skeletons and plain nodes: clip and time to node
 //! world matrices.
 const std = @import("std");
-const math = @import("../math.zig");
-const gltf = @import("../asset/gltf.zig");
+const math = @import("assets").math;
+const gltf = @import("assets").gltf;
 
 /// An animated entity's state at one moment: a base clip and time, with
 /// optional clips blended on top. Passed to `Renderer.entities.setPose` each frame.

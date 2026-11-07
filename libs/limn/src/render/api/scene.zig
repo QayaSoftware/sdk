@@ -1,6 +1,6 @@
 //! Cameras, lights, entities and what loaded assets report.
 const std = @import("std");
-const math = @import("../../math.zig");
+const math = @import("assets").math;
 const animation = @import("../animation.zig");
 const handle = @import("handles");
 const render = @import("../renderer.zig");

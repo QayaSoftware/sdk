@@ -2,7 +2,7 @@
 //! the application's own `MeshDesc`s. Centered on the origin, +Y up, with
 //! normals, texture coordinates and counter-clockwise front faces.
 const std = @import("std");
-const math = @import("../math.zig");
+const math = @import("assets").math;
 const api = @import("api.zig");
 
 const Vec3 = math.Vec3;

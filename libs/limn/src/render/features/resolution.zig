@@ -7,7 +7,7 @@ const path_tracing_feature = @import("path_tracing.zig");
 const gpu = @import("../gpu.zig");
 const upscaling = @import("../techniques/upscaling.zig");
 const ScenePass = @import("../scene_pass.zig").ScenePass;
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const std = @import("std");
 const api = @import("../api.zig");
 const features = @import("../core/features.zig");
@@ -65,7 +65,7 @@ pub const Settings = struct {
     /// How a picture rendered below output size is brought up to it.
     /// `.temporal`, `.fsr2`, `.fsr3` and `.dlss` need `temporal_antialiasing`.
     /// `.fsr2` and `.fsr3` also need storage images and `-Dfidelityfx`;
-    /// `.dlss` an NVIDIA GPU and the DLSS SDK (`zig build dlss-sdk`), and
+    /// `.dlss` an NVIDIA GPU and the DLSS SDK (`zig build lrhi-dlss-sdk`), and
     /// it also antialiases at full size. `.fsr` is FSR 1, sharpened by
     /// `sharpen`. What cannot run is replaced by `.temporal` and reported
     /// in `Stats.downgraded`.

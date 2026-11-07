@@ -4,7 +4,7 @@
 //! targets from a pool for as long as they are in use, and moves every
 //! target between layouts.
 const std = @import("std");
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const targets = @import("targets.zig");
 
 /// The points of a frame, in the order they run. Passes of one stage run in

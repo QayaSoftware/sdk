@@ -13,7 +13,7 @@ const api = @import("../api.zig");
 const features = @import("../core/features.zig");
 const renderer_state = @import("../state.zig");
 const ray_scene = @import("../scene/ray_scene.zig");
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 
 const ViewState = render.ViewState;
 const InstanceCullPush = scene_pass.InstanceCullPush;
@@ -338,6 +338,7 @@ pub fn blasGeometry(renderer: *Renderer, mesh: ModelMesh) rhi.BlasGeometry {
         .index_offset = @as(u64, mesh.index_offset) * @sizeOf(u32),
         .index_count = mesh.lod0_index_count,
         .solid = !mesh.alpha_tested,
+        .opacity = mesh.opacity,
     };
 }
 
@@ -345,18 +346,28 @@ pub fn blasGeometry(renderer: *Renderer, mesh: ModelMesh) rhi.BlasGeometry {
 pub fn buildMeshBlases(renderer: *Renderer, cmd: *rhi.CommandEncoder, meshes: []const ModelMesh, comptime pick: fn (ModelMesh) ?rhi.AccelerationStructure) !void {
     var geometries: [16]rhi.BlasGeometry = undefined;
     var builds: [16]rhi.BlasBuild = undefined;
+    var micromaps: [16]rhi.OpacityMicromap = undefined;
     var count: usize = 0;
+    var micromap_count: usize = 0;
     for (meshes) |mesh| {
         const blas = pick(mesh) orelse continue;
         geometries[count] = blasGeometry(renderer, mesh);
         builds[count] = .{ .blas = blas, .desc = .{ .geometries = geometries[count..][0..1] } };
+        if (mesh.opacity) |micromap| {
+            micromaps[micromap_count] = micromap;
+            micromap_count += 1;
+        }
         count += 1;
         if (count == builds.len) {
+            try cmd.buildOpacityMicromaps(micromaps[0..micromap_count]);
             try cmd.buildBlases(&builds);
             count = 0;
+            micromap_count = 0;
         }
     }
-    if (count != 0) try cmd.buildBlases(builds[0..count]);
+    if (count == 0) return;
+    try cmd.buildOpacityMicromaps(micromaps[0..micromap_count]);
+    try cmd.buildBlases(builds[0..count]);
 }
 
 /// Skins and morphs the scene's meshes, then updates their meshlet bounds and

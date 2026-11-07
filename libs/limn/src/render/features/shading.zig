@@ -7,8 +7,8 @@ const scene_pass = @import("../scene_pass.zig");
 const filled = @import("../api.zig").filled;
 const reflections_feature = @import("reflections.zig");
 const render = @import("../renderer.zig");
-const rhi = @import("../../rhi/rhi.zig");
-const math = @import("../../math.zig");
+const rhi = @import("lrhi");
+const math = @import("assets").math;
 const gpu = @import("../gpu.zig");
 const std = @import("std");
 const scene_lights = @import("../renderer/scene_lights.zig");
@@ -244,6 +244,27 @@ pub fn shadeScene(renderer: *Renderer, p: *const ScenePass, lighting: *const Lig
         cmd.endScope();
         shading_rate = rates;
     };
+    var sun_mask: ?rhi.Texture = null;
+    const sun_light = if (debugging) null else sunLight(device, lighting, shadow_tlas);
+    if (sun_light) |light| {
+        const depth = device.textureInfo(view.depth);
+        const own = try features.stateOf(view_data, device, @This());
+        const mask = try own.mask(device, depth.width, depth.height);
+        cmd.beginScope("sun shadow");
+        cmd.transition(mask, .storage);
+        cmd.bindPipeline(try renderer.internal.pipelines.of(sunShadowPipeline));
+        cmd.pushConstants(shade_pass_push.SunShadowPush{
+            .frame = frame_address,
+            .depth_texture = device.textureIndex(view.depth),
+            .mask = try device.storageIndex(mask, 0, 0),
+            .sun_light = light,
+            .phase = @intCast(renderer.internal.frame_index % 4),
+        });
+        cmd.dispatch(((depth.width + 1) / 2 + 7) / 8, ((depth.height + 1) / 2 + 7) / 8, 1);
+        cmd.transition(mask, .shader_read);
+        cmd.endScope();
+        sun_mask = mask;
+    }
     cmd.beginScope("shading");
     if (reflections) |targets| {
         try cmd.beginRendering(.{ .color = &.{
@@ -274,6 +295,10 @@ pub fn shadeScene(renderer: *Renderer, p: *const ScenePass, lighting: *const Lig
             gpu.invalid_id,
     };
     if (shade_push.shadow_history != gpu.invalid_id) shade_push.shadow_depth = device.textureIndex(view.previous_depth);
+    if (sun_mask) |mask| {
+        shade_push.sun_mask = device.textureIndex(mask);
+        shade_push.sun_light = sun_light.?;
+    }
     for (renderer.materials.internal.shaders, renderer.materials.internal.shader_users, 0..) |shader, users, slot| {
         if (shader != null and users != 0) shade_push.material_shader |= @as(u32, 1) << @intCast(slot);
     }
@@ -364,4 +389,42 @@ fn fullShadePipeline(device: *rhi.Device) pipelines_module.Desc {
 
 fn fullShadeReflectivePipeline(device: *rhi.Device) pipelines_module.Desc {
     return pipelines_module.pass("shading (reflective)", if (device.caps.ray_tracing) pipelines_module.shaderCode("shade_rt.frag.spv") else pipelines_module.shaderCode("shade.frag.spv"), &pipelines_module.shade_reflective_targets);
+}
+
+/// What shading keeps per view: the sun's traced shadow at half size.
+pub const View = struct {
+    sun_mask: ?rhi.Texture = null,
+    sun_mask_size: [2]u32 = .{ 0, 0 },
+
+    pub fn init(_: *rhi.Device) !View {
+        return .{};
+    }
+
+    pub fn deinit(self: *View, device: *rhi.Device) void {
+        if (self.sun_mask) |texture| device.destroyTexture(texture);
+    }
+
+    fn mask(self: *View, device: *rhi.Device, width: u32, height: u32) !rhi.Texture {
+        const size = [2]u32{ (width + 1) / 2, (height + 1) / 2 };
+        if (self.sun_mask) |texture| if (std.meta.eql(self.sun_mask_size, size)) return texture;
+        if (self.sun_mask) |texture| device.destroyTexture(texture);
+        self.sun_mask = null;
+        self.sun_mask = try device.createTexture(.{ .name = "sun shadow", .width = size[0], .height = size[1], .format = .rg16_float, .usage = .{ .sampled = true, .storage = true } });
+        self.sun_mask_size = size;
+        return self.sun_mask.?;
+    }
+};
+
+/// The light whose traced shadow `sunShadowMain` traces at half size: the
+/// first directional light shadowed by rays, where shading would trace them.
+fn sunLight(device: *rhi.Device, lighting: *const Lighting, shadow_tlas: u64) ?u32 {
+    if (shadow_tlas == 0 or !device.caps.storage_images or !device.caps.formats.get(.rg16_float).storage) return null;
+    for (lighting.records[0..@min(lighting.records.len, lighting.light_count)], 0..) |light, index| {
+        if (light.flags & gpu.light_directional != 0 and light.flags & gpu.light_traced_shadow != 0) return @intCast(index);
+    }
+    return null;
+}
+
+fn sunShadowPipeline(_: *rhi.Device) pipelines_module.Desc {
+    return .{ .compute = .{ .name = "sun shadow", .shader = pipelines_module.shaderCode("sun_shadow.comp.spv") } };
 }

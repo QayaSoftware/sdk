@@ -2,8 +2,8 @@
 //! take pixels from the top-left; `*3d` calls take world units and are
 //! depth-tested. A `DrawList` is plain CPU data, one per recording thread.
 const std = @import("std");
-const math = @import("../math.zig");
-const font_module = @import("font_baker").font;
+const math = @import("assets").math;
+const font_module = @import("assets").font;
 const text_layout = @import("text_layout.zig");
 
 /// Borrowed by the draw list. `Renderer.render` refuses a list drawn with a

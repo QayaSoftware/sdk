@@ -65,3 +65,13 @@ pub const UpdatePush = extern struct {
 
     pub const references = .{ .frame = "FrameConstants", .rays = "float4*", .directions = "float4*" };
 };
+
+/// `UpdatePush` for `updateGroupMain`, which writes the probes it updates
+/// through storage images rather than blending into render targets.
+pub const UpdateGroupPush = extern struct {
+    update: UpdatePush,
+    /// Storage indices of the target, and of the fast irradiance target.
+    target: u32,
+    fast_target: u32,
+    pad: [2]u32 = .{ 0, 0 },
+};

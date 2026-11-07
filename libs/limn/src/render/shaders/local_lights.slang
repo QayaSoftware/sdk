@@ -127,6 +127,34 @@ float3 sphereLight(Surface surface, float3 to_light, float distance_to_light, fl
     return surfaceLight(diffuse_only, l, radiance) + surfaceLight(specular_only, specular_l, radiance) * (normalization * specular_kept);
 }
 
+/// The sun's traced shadow at half size (`sunShadowMain`), the light it is
+/// for, and the pixel being shaded and its view depth, which shade.slang
+/// sets.
+static uint sun_mask_texture = INVALID_ID;
+static uint sun_mask_light = INVALID_ID;
+static float2 sun_mask_pixel = float2(0.0);
+static float sun_mask_depth = 0.0;
+
+/// The sun's shadow at the pixel being shaded: the four nearest texels of
+/// the half-size mask, weighed by how near each one's depth is.
+float sunMaskAt() {
+    int2 size = int2(textureSize(sun_mask_texture));
+    float2 at = sun_mask_pixel * 0.5 - 0.5;
+    int2 corner = int2(floor(at));
+    float2 f = at - floor(at);
+    float total = 0.0;
+    float weight_total = 0.0;
+    for (int i = 0; i < 4; i++) {
+        int2 offset = int2(i & 1, i >> 1);
+        float2 tap = fetchTexel(sun_mask_texture, clamp(corner + offset, int2(0), size - 1)).rg;
+        float bilinear = (offset.x == 0 ? 1.0 - f.x : f.x) * (offset.y == 0 ? 1.0 - f.y : f.y);
+        float weight = bilinear / (1e-3 + abs(tap.g - sun_mask_depth) / max(sun_mask_depth, 1e-3) * 20.0);
+        total += tap.r * weight;
+        weight_total += weight;
+    }
+    return total / max(weight_total, 1e-6);
+}
+
 static uint soft_history_texture = INVALID_ID;
 static float2 soft_history_uv = float2(0.0);
 static uint soft_history_depth_texture = INVALID_ID;
@@ -190,14 +218,14 @@ void addLit(inout LightSums sums, float3 lit, float traced, bool soft) {
 /// Adds one listed light to `sums`. Called with `panels` false for every
 /// light but rectangles and then true for those alone, so that the code of
 /// each kind is in a loop of its own and the busy loop keeps few registers.
-void addLocalLight(FrameConstants frame, Surface surface, Light light, float noise, bool panels, inout LightSums sums) {
+void addLocalLight(FrameConstants frame, Surface surface, uint index, Light light, float noise, bool panels, inout LightSums sums) {
     bool panel = (SHADE_FEATURES & FEATURE_RECT_LIGHTS) != 0u && (light.flags & LIGHT_RECTANGLE) != 0u;
     if (panel != panels) return;
     if (!panels && (light.flags & LIGHT_DIRECTIONAL) != 0u) {
         float3 l = -light.direction;
         if (dot(surface.normal, l) > 0.0) {
             float3 lit = surfaceLight(surface, l, light.color);
-            float traced = tracedShadow(frame, light, surface.position, surface.normal, l, 1e4, noise);
+            float traced = index == sun_mask_light && sun_mask_texture != INVALID_ID ? sunMaskAt() : tracedShadow(frame, light, surface.position, surface.normal, l, 1e4, noise);
             bool soft = (SHADE_FEATURES & FEATURE_TRACED_LIGHT_SHADOWS) != 0u && (light.flags & LIGHT_TRACED_SHADOW) != 0u && light.source_radius > 0.0;
             addLit(sums, soft ? lit : lit * traced, traced, soft);
         }
@@ -284,14 +312,15 @@ float3 localLights(FrameConstants frame, Surface surface, float2 pixel, float no
     uint count = frame.lights.clusters.data[cluster].count;
     uint listed = frame.lights.clusters.data[cluster].offset;
     for (uint i = 0u; i < count; i++) {
-        Light light = frame.lights.lights.data[frame.lights.light_indices[listed + i]];
-        addLocalLight(frame, surface, light, noise, false, sums);
+        uint index = frame.lights.light_indices[listed + i];
+        Light light = frame.lights.lights.data[index];
+        addLocalLight(frame, surface, index, light, noise, false, sums);
     }
     if ((SHADE_FEATURES & FEATURE_RECT_LIGHTS) != 0u) for (uint i = 0u; i < count; i++) {
         uint index = frame.lights.light_indices[listed + i];
         if ((frame.lights.lights.data[index].flags & LIGHT_RECTANGLE) == 0u) continue;
         Light light = frame.lights.lights.data[index];
-        addLocalLight(frame, surface, light, noise, true, sums);
+        addLocalLight(frame, surface, index, light, noise, true, sums);
     }
     float3 color = sums.color;
     if (sums.soft_weight > 0.0) {

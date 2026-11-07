@@ -7,7 +7,7 @@ const Options = api.Options;
 const Scene = api.Scene;
 const Settings = api.Settings;
 const Upscaler = api.Upscaler;
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 
 /// How path tracing follows rays on this device; see `Capabilities`.
 pub const PathTracingSupport = enum {
@@ -24,7 +24,7 @@ pub const Support = enum {
     available,
     /// The GPU, its driver or the display cannot do it.
     no_device_support,
-    /// Left out of this build (`-Dfidelityfx`, `zig build dlss-sdk`).
+    /// Left out of this build (`-Dfidelityfx`, `zig build lrhi-dlss-sdk`).
     not_built,
     /// Not asked for in `Options`.
     off,

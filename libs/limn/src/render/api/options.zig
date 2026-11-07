@@ -1,7 +1,7 @@
 //! Options fixed when a renderer is created.
 const std = @import("std");
-const rhi = @import("../../rhi/rhi.zig");
-const gltf = @import("../../asset/gltf.zig");
+const rhi = @import("lrhi");
+const gltf = @import("assets").gltf;
 const animation = @import("../animation.zig");
 const render = @import("../renderer.zig");
 const features = @import("../core/features.zig");

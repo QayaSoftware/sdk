@@ -1,5 +1,5 @@
 //! Views, frames and application passes.
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const render = @import("../renderer.zig");
 
 const Mat4 = render.Mat4;

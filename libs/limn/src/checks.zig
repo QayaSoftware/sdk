@@ -102,7 +102,7 @@ const Checks = struct {
         const renderer = self.renderer;
         const pixels = [_]u8{ 255, 255, 255, 255 };
         const gone = try renderer.images.create(.{ .width = 1, .height = 1, .pixels = &pixels });
-        const font = try renderer.fonts.load("libs/limn/src/render/fonts/DejaVuSans.ttf", &.{.{ 32, 126 }});
+        const font = try renderer.fonts.load("libs/assets/src/fonts/DejaVuSans.ttf", &.{.{ 32, 126 }});
         var list = gfx.DrawList.init(self.gpa);
         defer list.deinit();
         try list.image(gone, .{ .x = 0, .y = 0, .width = 8, .height = 8 }, .{});

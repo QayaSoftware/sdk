@@ -1,11 +1,11 @@
 //! Volumetric clouds of a scene that has them.
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const pipelines_module = @import("../renderer/pipelines.zig");
 const cloud_passes_push = @import("../shaders/push/cloud_passes.zig");
 const scene_pass = @import("../scene_pass.zig");
 const render = @import("../renderer.zig");
 const gpu = @import("../gpu.zig");
-const math = @import("../../math.zig");
+const math = @import("assets").math;
 const filled = @import("../api.zig").filled;
 const std = @import("std");
 const api = @import("../api.zig");

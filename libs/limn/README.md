@@ -108,4 +108,4 @@ Apache-2.0; see [`LICENSE`](LICENSE). Bundled work keeps its own terms:
 - DejaVu Sans, the built-in font: `src/render/fonts/LICENSE`
 - Example models, environments and fonts, some for non-commercial use only: [limn-examples](https://github.com/QayaSoftware/limn-examples/blob/master/examples/assets/README.md)
 
-Not bundled, but built in whenever `dlss_sdk/` or `nrd_sdk/` is present (`zig build limn-dlss-sdk`, `zig build limn-nrd-sdk`): NVIDIA DLSS and NRD, under the NVIDIA RTX SDKs license. Build with `-Ddlss=false -Dnrd=false` to leave them out.
+Not bundled, but built in whenever `dlss_sdk/` or `nrd_sdk/` is present (`zig build lrhi-dlss-sdk`, `zig build lrhi-nrd-sdk`): NVIDIA DLSS and NRD, under the NVIDIA RTX SDKs license. Build with `-Ddlss=false -Dnrd=false` to leave them out.

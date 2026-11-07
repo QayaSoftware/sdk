@@ -1,12 +1,12 @@
 //! Renderer state kept between calls: GPU buffer allocators, loaded
 //! assets, scenes, views and per-effect state. Internal to the renderer.
 const std = @import("std");
-const rhi = @import("../rhi/rhi.zig");
-const math = @import("../math.zig");
-const gltf = @import("../asset/gltf.zig");
+const rhi = @import("lrhi");
+const math = @import("assets").math;
+const gltf = @import("assets").gltf;
 const api = @import("api.zig");
-const ktx2 = @import("../asset/ktx2.zig");
-const texture_codec = @import("texture_codec");
+const ktx2 = @import("assets").ktx2;
+const texture_codec = @import("assets").texture;
 const shader_sources = @import("shader_sources");
 const png = @import("../png.zig");
 const gpu = @import("gpu.zig");
@@ -14,7 +14,7 @@ const animation = @import("animation.zig");
 const bvh = @import("bvh.zig");
 const handle = @import("handles");
 const draw_list = @import("draw_list.zig");
-const font_module = @import("font_baker").font;
+const font_module = @import("assets").font;
 const text_layout = @import("text_layout.zig");
 const render = @import("renderer.zig");
 const features = @import("core/features.zig");
@@ -477,6 +477,9 @@ pub const ModelMesh = struct {
     coarse_vertex_count: u32 = 0,
     coarse_error: f32 = 0,
     coarse: bool = false,
+    /// Which parts of its full-detail triangles are cut out, settled by ray
+    /// traversal; from `gltf.Mesh.opacity` where the device has micromaps.
+    opacity: ?rhi.OpacityMicromap = null,
     blas: ?rhi.AccelerationStructure = null,
     blas_building: ?rhi.AccelerationStructure = null,
 };
@@ -497,6 +500,9 @@ pub const ModelEntry = struct {
     /// Overrides from `materials.setTextures`; empty, or one per material.
     material_images: []MaterialTextures = &.{},
     next_image: usize = 0,
+    /// The next mesh `finalizeModel` uploads, once its materials are; null
+    /// before that.
+    next_mesh: ?u32 = null,
     meshes: []ModelMesh = &.{},
     mesh_base: u32 = 0,
     material_base: u32 = 0,
@@ -635,9 +641,21 @@ pub const InstanceRewrite = extern struct {
     record: gpu.Instance,
 };
 
-/// `Glowing` in pathtrace.slang: an evenly emissive instance and the
-/// triangle count of its full-detail level.
-pub const Glowing = extern struct { instance: u32, triangles: u32 };
+/// `Glowing` in light_sampling.slang: an evenly emissive instance, the
+/// triangle count of its full-detail level, and its entry in the alias table
+/// path tracing picks glowing instances from, by `power`.
+pub const Glowing = extern struct {
+    instance: u32,
+    triangles: u32,
+    /// Luminance of its emission; times the square of its bounding radius,
+    /// what it is picked by.
+    power: f32 = 0,
+    /// Chance it is picked, and the alias table's entry for its slot: kept
+    /// below `threshold`, else `alias` is.
+    chance: f32 = 0,
+    threshold: f32 = 1,
+    alias: u32 = 0,
+};
 /// Most glowing instances path tracing samples directly.
 pub const max_glowing = 1024;
 
@@ -691,7 +709,7 @@ pub const SceneData = struct {
     shadow_grants_traced: bool = false,
     /// The groups' ray-tracing instances, and the group state they were made
     /// from.
-    static_tlas: std.ArrayList(rhi.AccelerationInstance) = .empty,
+    static_tlas: std.ArrayList(rhi.PackedInstance) = .empty,
     static_tlas_version: u64 = std.math.maxInt(u64),
     static_tlas_base: usize = 0,
     /// Keep the CPU instance tree up to date for fallback path tracing.
@@ -1487,23 +1505,6 @@ pub const StreamFrustum = struct {
     }
 };
 
-/// What Basis Universal textures are transcoded to on this device: the
-/// block formats it reads, else plain texels.
-pub fn basisTarget(caps: rhi.Capabilities) ktx2.BasisTarget {
-    return if (caps.bc_textures) .bc else if (caps.astc_textures) .astc else .rgba;
-}
-
-pub fn blockFormat(block: gltf.Image.Block, one_channel: bool, two_channel: bool, srgb: bool) rhi.Format {
-    return switch (block) {
-        .bc1 => if (srgb) .bc1_srgb else .bc1_unorm,
-        .bc3 => if (srgb) .bc3_srgb else .bc3_unorm,
-        .bc6h => .bc6h_ufloat,
-        .rgba8 => if (srgb) .rgba8_srgb else .rgba8_unorm,
-        .astc4x4 => if (srgb) .astc_4x4_srgb else .astc_4x4_unorm,
-        .bc7 => if (one_channel) .bc4_unorm else if (two_channel) .bc5_unorm else if (srgb) .bc7_srgb else .bc7_unorm,
-    };
-}
-
 /// What texture streaming reads of one mesh of a model, in instance order.
 pub const StreamPart = struct {
     /// Texture coordinate change per meter on the mesh; 0 or less skips it.
@@ -1545,7 +1546,7 @@ pub const TextureStream = struct {
     }
 
     pub fn format(self: TextureStream) rhi.Format {
-        return blockFormat(self.block, self.one_channel, self.two_channel, self.srgb);
+        return @import("lrhi-assets").blockFormat(self.block, self.one_channel, self.two_channel, self.srgb);
     }
 
     pub fn levelOffset(self: TextureStream, level: u32) usize {

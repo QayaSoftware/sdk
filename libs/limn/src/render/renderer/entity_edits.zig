@@ -1,6 +1,6 @@
 //! Entity transforms and edits, queued or made under the renderer lock. Internal to the renderer.
 const std = @import("std");
-const math = @import("../../math.zig");
+const math = @import("assets").math;
 const api = @import("../api.zig");
 const renderer_state = @import("../state.zig");
 const render = @import("../renderer.zig");

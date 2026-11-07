@@ -2,8 +2,8 @@
 const canvas_push = @import("../shaders/push/canvas.zig");
 const output_feature = @import("output.zig");
 const std = @import("std");
-const rhi = @import("../../rhi/rhi.zig");
-const math = @import("../../math.zig");
+const rhi = @import("lrhi");
+const math = @import("assets").math;
 const view_math = @import("../renderer/view_math.zig");
 const hooks_feature = @import("hooks.zig");
 const gpu = @import("../gpu.zig");
@@ -12,7 +12,7 @@ const api = @import("../api.zig");
 const features = @import("../core/features.zig");
 const renderer_state = @import("../state.zig");
 const render = @import("../renderer.zig");
-const font_module = @import("font_baker").font;
+const font_module = @import("assets").font;
 
 const Renderer = render.Renderer;
 const ViewContext = features.ViewContext;

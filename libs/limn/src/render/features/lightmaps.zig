@@ -1,12 +1,12 @@
 //! Bakes the lightmaps a scene has asked for, a little each frame.
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const pipelines_module = @import("../renderer/pipelines.zig");
 const lightmap_push = @import("../shaders/push/lightmap.zig");
 const render = @import("../renderer.zig");
 const restyleEntity = @import("../renderer/entity_edits.zig").restyleEntity;
 const transformOf = @import("../renderer/entity_edits.zig").transformOf;
 const scene_pass = @import("../scene_pass.zig");
-const math = @import("../../math.zig");
+const math = @import("assets").math;
 const features = @import("../core/features.zig");
 
 const ScenePass = scene_pass.ScenePass;

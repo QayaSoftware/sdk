@@ -1,5 +1,5 @@
 //! The surfaces of a scene's simulated liquids.
-const rhi = @import("../../rhi/rhi.zig");
+const rhi = @import("lrhi");
 const pipelines_module = @import("../renderer/pipelines.zig");
 const liquid_push = @import("../shaders/push/liquid.zig");
 const render = @import("../renderer.zig");
