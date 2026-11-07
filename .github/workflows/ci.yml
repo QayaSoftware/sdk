@@ -30,11 +30,11 @@ jobs:
         with:
           version: 0.17.0
       - name: Formatting
-        run: zig fmt --check build.zig build libs/limn libs/slime/build.zig
+        run: zig fmt --check build.zig build libs
       - name: Compile everything and its tests
-        run: zig build check
+        run: zig build check -j2
       - name: Unit tests
-        run: zig build test
+        run: zig build test -j2
 
   windows:
     runs-on: windows-latest
