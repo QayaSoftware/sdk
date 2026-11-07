@@ -4,6 +4,7 @@
 //! all trace it; none of them owns it. Internal to the renderer.
 const std = @import("std");
 const rhi = @import("lrhi");
+const scene_layout = @import("../renderer/scene_layout.zig");
 const api = @import("../api.zig");
 const render = @import("../renderer.zig");
 const scene_pass = @import("../scene_pass.zig");
@@ -144,7 +145,7 @@ pub fn buildPendingBlas(self: *Renderer, cmd: *rhi.CommandEncoder, frame_index: 
                     if (mesh.blas_building orelse mesh.blas) |blas| try cmd.measureBlas(blas);
                 }
             }
-            if (adoptBlas(self, entry)) self.internal.asset_generation += 1;
+            if (adoptBlas(self, entry)) scene_layout.relayModel(self, .{ .index = @intCast(slot_index), .generation = self.models.internal.table.slotAt(slot_index).generation });
             continue;
         };
         if (entry.blas_job) |job| {
@@ -154,7 +155,7 @@ pub fn buildPendingBlas(self: *Renderer, cmd: *rhi.CommandEncoder, frame_index: 
             }
             device.releaseDetached(job);
             entry.blas_job = null;
-            if (adoptBlas(self, entry)) self.internal.asset_generation += 1;
+            if (adoptBlas(self, entry)) scene_layout.relayModel(self, .{ .index = @intCast(slot_index), .generation = self.models.internal.table.slotAt(slot_index).generation });
             continue;
         }
         var detached = false;

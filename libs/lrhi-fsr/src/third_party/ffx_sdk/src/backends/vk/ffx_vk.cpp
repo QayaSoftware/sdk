@@ -2019,7 +2019,7 @@ FfxErrorCode GetDeviceCapabilitiesVK(FfxInterface* backendInterface, FfxDeviceCa
 
             vkGetPhysicalDeviceFeatures2(context->physicalDevice, &physicalDeviceFeatures2);
 
-            deviceCapabilities->fp16Supported = (bool)shaderFloat18Int8Features.shaderFloat16;
+            deviceCapabilities->fp16Supported = shaderFloat18Int8Features.shaderFloat16 && physicalDeviceFeatures2.features.shaderInt16;
         }
         else if (strcmp(backendContext->extensionProperties[i].extensionName, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) == 0)
         {

@@ -566,7 +566,8 @@ pub const Capabilities = struct {
     /// feature); without it and mesh shaders, visibility draws pull their
     /// indices in the vertex shader.
     primitive_id: bool = false,
-    /// 16-bit floats and integers in shaders.
+    /// 16-bit floats and integers in shaders. lrhi-fsr's FidelityFX picks its
+    /// 16-bit shaders on the same test.
     float16: bool = false,
     /// 64-bit integers in shaders, which ray tracing needs.
     int64: bool = false,

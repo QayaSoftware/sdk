@@ -514,6 +514,10 @@ pub fn relayModel(self: *Renderer, model: Model) void {
         for (scene.entities.items) |entity| {
             const data = self.entities.internal.table.get(entity) orelse continue;
             if (!data.visible or !std.meta.eql(data.model, model)) continue;
+            const queued = for (scene.added.items) |added| {
+                if (std.meta.eql(added, entity)) break true;
+            } else false;
+            if (queued) continue;
             forgetEntity(self, scene, self.internal.entity_spans.items[entity.index]);
             self.internal.entity_spans.items[entity.index] = .{};
             scene.added.append(gpa, entity) catch {
