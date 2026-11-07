@@ -307,7 +307,7 @@ test "a directory sink starts a file each run and keeps the newest" {
 
 test "a timer measures, and stats count" {
     const timer = logging.Timer.start();
-    try testing.io.sleep(.fromMilliseconds(2), .awake);
+    try testing.io.sleep(.fromMilliseconds(20), .awake);
     try testing.expect(timer.elapsed() >= 2 * std.time.ns_per_ms);
     try testing.expectEqual(@as(f64, 1.5), logging.milliseconds(1_500_000));
     const L = logging.Logger(.{ .terminal = null, .memory = 4006 });

@@ -32,9 +32,9 @@ jobs:
       - name: Formatting
         run: zig fmt --check build.zig build libs
       - name: Compile everything and its tests
-        run: zig build check -j2
+        run: zig build check
       - name: Unit tests
-        run: zig build test -j2
+        run: zig build test
 
   windows:
     runs-on: windows-latest

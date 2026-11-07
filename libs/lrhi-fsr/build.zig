@@ -53,6 +53,11 @@ fn glslangCompiler(b: *std.Build) ?Tool {
         .files = &(glslang_sources ++ [_][]const u8{if (windows) "glslang/OSDependent/Windows/ossource.cpp" else "glslang/OSDependent/Unix/ossource.cpp"}),
         .flags = &.{ "-std=c++17", "-w", "-DENABLE_SPIRV", "-DENABLE_OPT=0", "-fno-exceptions", "-fno-rtti" },
     });
+    module.addCSourceFiles(.{
+        .root = source.path(""),
+        .files = &.{"SPIRV/doc.cpp"},
+        .flags = &.{ "-std=c++17", "-w", "-DENABLE_SPIRV", "-DENABLE_OPT=0", "-fno-exceptions", "-fno-rtti", "-O0" },
+    });
     const exe = b.addExecutable(.{ .name = "glslang", .root_module = module });
     return .{ .path = exe.getEmittedBin() };
 }
@@ -94,7 +99,6 @@ const glslang_sources = [_][]const u8{
     "SPIRV/Logger.cpp",
     "SPIRV/SpvBuilder.cpp",
     "SPIRV/SpvPostProcess.cpp",
-    "SPIRV/doc.cpp",
     "SPIRV/SpvTools.cpp",
     "SPIRV/disassemble.cpp",
     "StandAlone/StandAlone.cpp",
