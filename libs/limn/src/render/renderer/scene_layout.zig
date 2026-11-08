@@ -328,9 +328,7 @@ fn staleChunks(scene: *SceneData, first: u32, count: u32) void {
 
 /// Clears the spans of removed entities and lays out added ones in free
 /// slots, uploading only what they touch. False when the slots kept for
-/// entities run out, and the whole layout must be built again; the uploads
-/// to the ray-tracing instances it queued must be dropped first, or they
-/// land on top of the rebuilt layout's.
+/// entities run out, and the whole layout must be built again.
 pub fn applyStructure(self: *Renderer, scene: *SceneData) !bool {
     const gpa = self.internal.gpa;
     const device = self.device;

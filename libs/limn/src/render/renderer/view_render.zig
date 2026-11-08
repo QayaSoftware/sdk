@@ -337,6 +337,7 @@ fn renderScene(
     if (fresh_scene) {
         scene.prepared = try prepareScene(self, scene, arena);
         scene.prepared_frame = self.internal.frame_index;
+        try cmd.flushUploads();
         try applySceneUpdate(self, cmd, scene, scene.prepared.update);
     }
     const scene_frame = scene.prepared;

@@ -113,10 +113,7 @@ pub fn prepareScene(self: *Renderer, scene: *SceneData, arena: *FrameArena) !Sce
     if (scene.layout_dirty or scene.layout_generation != self.internal.asset_generation) {
         try rebuildLayout(self, scene);
     } else if (scene.added.items.len != 0 or scene.removed.items.len != 0 or scene.quarantine.items.len != 0) {
-        if (!try applyStructure(self, scene)) {
-            if (scene.tlas_instances) |buffer| device.cancelUploads(buffer, null);
-            try rebuildLayout(self, scene);
-        }
+        if (!try applyStructure(self, scene)) try rebuildLayout(self, scene);
     }
     const layout = scene.layout.items;
     const entries = scene.entries.items;
@@ -651,7 +648,8 @@ pub fn prepareScene(self: *Renderer, scene: *SceneData, arena: *FrameArena) !Sce
 }
 
 /// Records the GPU side of `prepareScene`: copies and compute passes that
-/// bring the scene's instance buffers up to date.
+/// bring the scene's instance buffers up to date. The uploads `prepareScene`
+/// queued must be recorded first, or they land on top of what this writes.
 pub fn applySceneUpdate(self: *Renderer, cmd: *rhi.CommandEncoder, scene: *SceneData, update: scene_pass.SceneUpdate) !void {
     const tlas_size = @sizeOf(rhi.PackedInstance);
     const copies = update.whole or update.skinned_tlas_count != 0;

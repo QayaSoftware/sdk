@@ -189,13 +189,15 @@ const compactions_per_frame = 64;
 
 /// Replaces the built structures whose compacted size has come back from
 /// the GPU with copies of that size. The copy is made by `cmd`, ahead of
-/// anything that traces rays this frame.
+/// anything that traces rays this frame. Only the instances that point at
+/// the structures change, so scenes write theirs whole again and keep their
+/// layout.
 fn compactBuiltBlas(self: *Renderer, cmd: *rhi.CommandEncoder) !void {
     const device = self.device;
     var budget: u32 = compactions_per_frame;
+    var replaced_any = false;
     for (0..self.models.internal.table.slotCount()) |slot_index| if (self.models.internal.table.slotAt(slot_index).value) |*entry| {
         if (!entry.blas_compacting or entry.blas_pending) continue;
-        var replaced_any = false;
         var waiting = false;
         for (entry.meshes) |*mesh| {
             const built = mesh.blas orelse continue;
@@ -215,11 +217,14 @@ fn compactBuiltBlas(self: *Renderer, cmd: *rhi.CommandEncoder) !void {
             replaced_any = true;
             budget -= 1;
         }
-        if (replaced_any) scene_layout.relayModel(self, .{ .index = @intCast(slot_index), .generation = self.models.internal.table.slotAt(slot_index).generation });
         if (!waiting) {
             entry.blas_compacting = false;
             self.internal.rays.blas_compacting -= 1;
         }
+    };
+    if (replaced_any) for (0..self.scenes.internal.table.slotCount()) |slot_index| if (self.scenes.internal.table.slotAt(slot_index).value) |*scene| {
+        scene.records_valid = false;
+        scene.static_tlas_version = std.math.maxInt(u64);
     };
 }
 
