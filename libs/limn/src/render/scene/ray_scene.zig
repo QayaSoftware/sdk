@@ -215,7 +215,7 @@ fn compactBuiltBlas(self: *Renderer, cmd: *rhi.CommandEncoder) !void {
             replaced_any = true;
             budget -= 1;
         }
-        if (replaced_any) self.internal.asset_generation += 1;
+        if (replaced_any) scene_layout.relayModel(self, .{ .index = @intCast(slot_index), .generation = self.models.internal.table.slotAt(slot_index).generation });
         if (!waiting) {
             entry.blas_compacting = false;
             self.internal.rays.blas_compacting -= 1;

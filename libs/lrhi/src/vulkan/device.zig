@@ -969,6 +969,7 @@ pub const Device = struct {
 
     pub const createBuffer = buffers_module.createBuffer;
     pub const destroyBuffer = buffers_module.destroyBuffer;
+    pub const cancelUploads = buffers_module.cancelUploads;
     pub const bufferResource = buffers_module.bufferResource;
     pub const bufferAddress = buffers_module.bufferAddress;
     pub const bufferSize = buffers_module.bufferSize;

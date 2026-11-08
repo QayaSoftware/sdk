@@ -113,7 +113,10 @@ pub fn prepareScene(self: *Renderer, scene: *SceneData, arena: *FrameArena) !Sce
     if (scene.layout_dirty or scene.layout_generation != self.internal.asset_generation) {
         try rebuildLayout(self, scene);
     } else if (scene.added.items.len != 0 or scene.removed.items.len != 0 or scene.quarantine.items.len != 0) {
-        if (!try applyStructure(self, scene)) try rebuildLayout(self, scene);
+        if (!try applyStructure(self, scene)) {
+            if (scene.tlas_instances) |buffer| device.cancelUploads(buffer, null);
+            try rebuildLayout(self, scene);
+        }
     }
     const layout = scene.layout.items;
     const entries = scene.entries.items;

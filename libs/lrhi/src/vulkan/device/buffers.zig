@@ -56,7 +56,9 @@ pub fn createBuffer(self: *Device, desc: types.BufferDesc) !types.Buffer {
     return self.buffers.insert(resource);
 }
 
-/// Drops queued uploads that target a resource being destroyed.
+/// Drops the queued uploads to `buffer` or `texture` that no encoder has
+/// recorded yet: for a resource being destroyed, or one about to be written
+/// whole by other means.
 pub fn cancelUploads(self: *Device, buffer: ?types.Buffer, texture: ?types.Texture) void {
     self.lockResources();
     defer self.unlockResources();
